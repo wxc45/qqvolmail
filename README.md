@@ -12,6 +12,8 @@
 ## 下载
 
 - [最新 Releases](https://github.com/wxc45/qqvolmail/releases/latest)：Windows 单文件版与便携版。
+- [QQVolMail_v1.2.4_win64.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.2.4/QQVolMail_v1.2.4_win64.zip)：单文件启动器。
+- [QQVolMail_v1.2.4_win64_portable.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.2.4/QQVolMail_v1.2.4_win64_portable.zip)：便携文件夹版。
 - 也可以从源码运行，见下方“快速开始”。
 
 ## 功能
@@ -67,14 +69,14 @@
 
 **方式一：使用 exe（推荐给普通用户）**
 
-1. 把 `QQ分卷邮递_v1.2.4_win64.zip` 解压到**桌面或下载目录**（不要解压到 DSH 工作区），
+1. 把 `QQVolMail_v1.2.4_win64.zip` 解压到**桌面或下载目录**（不要解压到带 Low 完整性标签的受限目录），
    双击其中的 **`QQ分卷邮递.exe`**。
 2. 第一次启动会在 exe 旁边创建 `QQVolMail_runtime` 文件夹，把内置程序解压进去，
    然后启动主界面；之后启动会直接复用，不再重复解压。
 3. 启动时会依次出现 SmartScreen 和 UAC：SmartScreen 点“更多信息”→“仍要运行”，
    UAC 点“是”。程序需要管理员权限才能在任意输出目录创建分卷。
 4. 如果 exe 所在文件夹没有写入权限（例如放在 `Program Files`），
-   改用 `QQ分卷邮递_v1.2.4_win64_portable.zip`，解压到可写目录后运行。
+   改用 `QQVolMail_v1.2.4_win64_portable.zip`，解压到可写目录后运行。
 5. 点击「选择文件」或「选择文件夹」，再选择输出目录。
 6. 设置每卷大小（建议 20 MB）和压缩方式。
 7. 填写发件 QQ 邮箱、SMTP 授权码、收件邮箱。
