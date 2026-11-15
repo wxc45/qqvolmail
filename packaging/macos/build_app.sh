@@ -44,12 +44,13 @@ iconutil -c icns "$ICONSET" --out "$ICNS"
 echo "    $ICNS"
 
 echo "==> 2/3 PyInstaller 打包（--windowed --onedir）"
+# --add-data 的相对源路径会按 --specpath 解析，所以这里必须用绝对路径。
 rm -rf "$DIST"
 python3 -m PyInstaller \
     --noconfirm --clean --onedir --windowed \
     --name "$APP_NAME" \
     --icon "$ICNS" \
-    --add-data "assets:assets" \
+    --add-data "$ASSETS:assets" \
     --distpath "$DIST" \
     --workpath "$WORK" \
     --specpath "$BUILD_DIR" \

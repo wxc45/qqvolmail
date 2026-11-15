@@ -394,15 +394,28 @@ Windows 安装 [7-Zip](https://www.7-zip.org/)，或设置环境变量：
 set SEVENZIP_PATH=C:\Program Files\7-Zip\7z.exe
 ```
 
-macOS 可以安装官方命令行版 `7zz`，或把已有二进制显式指定给程序：
+macOS 从 [7-Zip 官方下载页](https://www.7-zip.org/download.html) 取命令行版
+（Apple Silicon 用 `7z2606-mac.tar.xz`，Intel 用 `7z2606-mac-x64.tar.xz`）：
 
 ```bash
-export SEVENZIP_PATH=/opt/homebrew/bin/7zz
+curl -LO https://github.com/ip7z/7zip/releases/download/26.06/7z2606-mac.tar.xz
+python3 -c "import tarfile; open('7zz','wb').write(tarfile.open('7z2606-mac.tar.xz').extractfile('7zz').read())"
+mkdir -p ~/.local/bin && mv 7zz ~/.local/bin/7zz && chmod +x ~/.local/bin/7zz
+```
+
+然后把 `~/.local/bin` 加入 PATH，或直接指定路径：
+
+```bash
+export SEVENZIP_PATH="$HOME/.local/bin/7zz"
 ```
 
 不安装也没关系：`auto` 模式会自动降级为 ZIP 分卷；只有命令行显式指定
 `--format 7z`（或配置里写死 `7z`）而本机又没有可用二进制时才会报错。
-程序会执行 `<bin> i` 做可用性探测，避免把 PATH 里同名的假 `7z` 命令当成真 7-Zip。
+程序会扫描 PATH 中的**所有**同名候选、执行 `<bin> i` 并要求输出含 `7-Zip` 标识，
+避免 PATH 前段的坏命令或转发壳脚本遮蔽后面真正可用的 7-Zip。
+
+> 已在 macOS arm64 + 7-Zip 26.06 实测：`.7z.001` 原生多卷生成、`7zz t` 校验通过、
+> 中文路径完好、`-bsp1` 进度参数可用，且 POSIX 下不带 Windows 专属的 `-sccUTF-8`。
 
 ### 大文件压缩时看起来像“卡住”
 
@@ -514,11 +527,13 @@ C# 编译器生成 `dist\QQ分卷邮递.exe`。这样单文件启动器不需要
 
 ## 打包 macOS .app（可选）
 
-运行时依旧零第三方依赖；只有**构建这一步**需要 PyInstaller：
+运行时依旧零第三方依赖；只有**构建这一步**需要 PyInstaller。
+推荐装在项目内的 `.venv`（已被 `.gitignore` 忽略，不污染全局 Python）：
 
 ```bash
-python3 -m pip install pyinstaller
-./packaging/macos/build_app.sh
+python3 -m venv .venv
+.venv/bin/python -m pip install pyinstaller
+PATH="$PWD/.venv/bin:$PATH" ./packaging/macos/build_app.sh
 ```
 
 脚本会：
@@ -536,4 +551,13 @@ xattr -dr com.apple.quarantine "dist_mac/QQ分卷邮递.app"
 
 `.app` 版与 macOS 源码版共用 `~/Library/Application Support/QQVolMail/settings.json`，
 不会把设置写进 app 包内部。Windows 的 exe 打包流程见上一节，两者互不影响。
+
+已实测（macOS arm64 / Python 3.13 / PyInstaller 6.22.3）：产物约 28 MB，
+`Contents/Resources` 内含 `app.icns` 与 `assets/app.png`，
+执行内含可执行文件加 `--selftest` 返回 0 并成功写出 `settings.json`。
+脚本里 `--add-data` 使用**绝对路径**：PyInstaller 会把相对源路径按 `--specpath`
+目录解析，写成 `assets:assets` 会报找不到资源。
+
+测试集：`SEVENZIP_PATH` 指向 7zz 时 47 项单测全部执行；未安装 7-Zip 时
+2 个原生分卷用例自动跳过，其余 45 项照常运行。
 

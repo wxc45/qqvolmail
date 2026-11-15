@@ -281,14 +281,14 @@ def read_json(path: Path) -> dict:
 
 
 def _sevenzip_is_usable(path: str) -> bool:
-    """轻量探测，排除 PATH 上的壳脚本、损坏或无法执行的 7-Zip。"""
+    """轻量探测：`<bin> i` 必须成功且输出含 7-Zip 标识，排除壳脚本与冒名命令。"""
     kwargs: dict = {}
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
             [path, "i"],
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=10,
             check=False,
@@ -296,7 +296,43 @@ def _sevenzip_is_usable(path: str) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return result.returncode == 0
+    return result.returncode == 0 and b"7-Zip" in (result.stdout or b"")
+
+
+def _path_candidates(names: tuple[str, ...]) -> list[str]:
+    """列出 PATH 中所有同名可执行文件。
+
+    shutil.which 只返回第一个命中项；若 PATH 前面存在坏的 7zz（或转发壳脚本），
+    真正的 7-Zip 会被直接忽略。这里按 PATH 顺序把所有候选都交给探测。
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        try:
+            resolved = str(Path(path).resolve())
+        except OSError:
+            return
+        if resolved not in seen:
+            seen.add(resolved)
+            candidates.append(path)
+
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            add(found)
+    path_env = os.environ.get("PATH") or os.defpath
+    for directory in path_env.split(os.pathsep):
+        if not directory:
+            continue
+        for name in names:
+            candidate = Path(directory) / name
+            try:
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    add(str(candidate))
+            except OSError:
+                continue
+    return candidates
 
 
 def find_7zip() -> str | None:
@@ -306,10 +342,7 @@ def find_7zip() -> str | None:
     if env_path:
         candidates.append(env_path)
     names = ("7z.exe", "7z", "7za.exe", "7za") if os.name == "nt" else ("7zz", "7z", "7za")
-    for name in names:
-        found = shutil.which(name)
-        if found:
-            candidates.append(found)
+    candidates.extend(_path_candidates(names))
     if os.name == "nt":
         candidates.extend(
             [
@@ -326,8 +359,12 @@ def find_7zip() -> str | None:
                 "/usr/local/bin/7z",
             ]
         )
+    seen: set[str] = set()
     for candidate in candidates:
         path = Path(candidate)
+        if str(path) in seen:
+            continue
+        seen.add(str(path))
         if path.is_file() and _sevenzip_is_usable(str(path)):
             return str(path)
     return None

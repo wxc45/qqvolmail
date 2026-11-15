@@ -385,10 +385,36 @@ class PlatformCompatTests(unittest.TestCase):
 
     def test_sevenzip_env_override_is_accepted(self) -> None:
         fake = self.temp / "my7z"
-        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.write_text("#!/bin/sh\necho '7-Zip (z) probe OK'\nexit 0\n", encoding="utf-8")
         fake.chmod(0o755)
         with mock.patch.dict(os.environ, {"SEVENZIP_PATH": str(fake)}):
             self.assertEqual(core.find_7zip(), str(fake))
+
+    def test_probe_requires_7zip_signature(self) -> None:
+        fake = self.temp / "silent7z"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        self.assertFalse(core._sevenzip_is_usable(str(fake)))
+
+    def test_find_7zip_scans_all_path_entries(self) -> None:
+        """PATH 前段的坏 7zz 不应遮蔽后段真正可用的 7-Zip。"""
+        broken_dir = self.temp / "broken"
+        good_dir = self.temp / "good"
+        broken_dir.mkdir()
+        good_dir.mkdir()
+        broken = broken_dir / "7zz"
+        broken.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
+        broken.chmod(0o755)
+        good = good_dir / "7zz"
+        good.write_text(
+            "#!/bin/sh\necho '7-Zip (z) probe OK'\nexit 0\n", encoding="utf-8"
+        )
+        good.chmod(0o755)
+        fake_path = os.pathsep.join([str(broken_dir), str(good_dir)])
+        with mock.patch.dict(
+            os.environ, {"PATH": fake_path, "SEVENZIP_PATH": ""}, clear=False
+        ), mock.patch.object(core.os, "name", "posix"):
+            self.assertEqual(core.find_7zip(), str(good))
 
 
 class InstructionsTests(unittest.TestCase):
