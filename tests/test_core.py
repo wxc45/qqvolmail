@@ -314,5 +314,116 @@ class CoreTests(unittest.TestCase):
             core.send_job(job, other, core.Reporter())
 
 
+class PlatformCompatTests(unittest.TestCase):
+    """跨平台参数构造的确定性回归：不依赖真实 7-Zip。"""
+
+    def setUp(self) -> None:
+        self.temp = Path(tempfile.mkdtemp(prefix="qqvolmail-platform-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp, ignore_errors=True)
+
+    def _capture_7z_args(self, os_name: str) -> dict:
+        captured: dict = {}
+
+        class FakeProcess:
+            def wait(self, timeout=None):
+                return 0
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return FakeProcess()
+
+        source = self.temp / "资料夹"
+        source.mkdir()
+        (source / "a.txt").write_text("hello", encoding="utf-8")
+        job_dir = self.temp / "job"
+        job_dir.mkdir()
+        archive = job_dir / "out.7z"
+        with mock.patch.object(core.os, "name", os_name), mock.patch.object(
+            core.subprocess, "Popen", fake_popen
+        ):
+            core._run_7z(
+                "7zz", source, archive, 1024, 1, job_dir, core.Reporter(), None
+            )
+        return captured
+
+    def test_7z_args_posix_style(self) -> None:
+        captured = self._capture_7z_args("posix")
+        self.assertNotIn("-sccUTF-8", captured["args"])
+        self.assertEqual(captured["args"][-1], "资料夹")
+        self.assertNotIn("\\", captured["args"][-1])
+        self.assertNotIn("creationflags", captured["kwargs"])
+
+    def test_7z_args_windows_style_preserved(self) -> None:
+        captured = self._capture_7z_args("nt")
+        self.assertIn("-sccUTF-8", captured["args"])
+        self.assertEqual(captured["args"][-1], ".\\资料夹")
+        self.assertIn("creationflags", captured["kwargs"])
+
+    def test_auto_falls_back_to_zip_without_7zip(self) -> None:
+        source = self.temp / "small.bin"
+        source.write_bytes(b"x" * 1000)
+        with mock.patch.object(core, "find_7zip", return_value=None):
+            job = core.create_job(
+                core.PrepareConfig(
+                    source=source,
+                    output_root=self.temp / "out",
+                    volume_size_mb=1,
+                    archive_format="auto",
+                ),
+                core.Reporter(),
+            )
+        self.assertEqual(job.data["archive_format"], "zip")
+
+    def test_broken_7zip_binary_is_rejected(self) -> None:
+        fake = self.temp / "fake7z"
+        fake.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
+        fake.chmod(0o755)
+        self.assertFalse(core._sevenzip_is_usable(str(fake)))
+
+    def test_sevenzip_env_override_is_accepted(self) -> None:
+        fake = self.temp / "my7z"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        with mock.patch.dict(os.environ, {"SEVENZIP_PATH": str(fake)}):
+            self.assertEqual(core.find_7zip(), str(fake))
+
+
+class InstructionsTests(unittest.TestCase):
+    """邮件正文的合并指引必须同时覆盖 Windows 与 macOS/Linux 收件人。"""
+
+    @staticmethod
+    def _parts(total: int) -> list[dict]:
+        return [{"name": f"src.zip.{index:03d}"} for index in range(1, total + 1)]
+
+    def test_single_part_zip(self) -> None:
+        self.assertIn(
+            "直接解压",
+            core._build_instructions("zip", 1, self._parts(1)),
+        )
+
+    def test_zip_instructions_include_both_platforms(self) -> None:
+        text = core._build_instructions("zip", 3, self._parts(3))
+        self.assertIn("copy /b", text)
+        self.assertIn('"src.zip.001" + "src.zip.002" + "src.zip.003"', text)
+        self.assertIn("cat src.zip.* > src.zip", text)
+        self.assertIn("macOS / Linux", text)
+        self.assertIn("Windows", text)
+
+    def test_many_parts_use_powershell_and_posix_cat(self) -> None:
+        text = core._build_instructions("zip", 25, self._parts(25))
+        self.assertIn("PowerShell", text)
+        self.assertIn("cat src.zip.* > src.zip", text)
+        self.assertNotIn("copy /b", text)
+
+    def test_7z_instructions_unchanged(self) -> None:
+        text = core._build_instructions("7z", 2, self._parts(2))
+        self.assertIn("7-Zip", text)
+        self.assertNotIn("copy /b", text)
+        self.assertNotIn("cat ", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

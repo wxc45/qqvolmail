@@ -280,24 +280,55 @@ def read_json(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _sevenzip_is_usable(path: str) -> bool:
+    """轻量探测，排除 PATH 上的壳脚本、损坏或无法执行的 7-Zip。"""
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [path, "i"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+            **kwargs,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def find_7zip() -> str | None:
+    """定位可用的 7-Zip；返回 None 时调用方应降级为 ZIP 分卷。"""
     env_path = os.environ.get("SEVENZIP_PATH", "").strip()
     candidates: list[str] = []
     if env_path:
         candidates.append(env_path)
-    for name in ("7z.exe", "7z", "7za.exe", "7za"):
+    names = ("7z.exe", "7z", "7za.exe", "7za") if os.name == "nt" else ("7zz", "7z", "7za")
+    for name in names:
         found = shutil.which(name)
         if found:
             candidates.append(found)
-    candidates.extend(
-        [
-            r"C:\Program Files\7-Zip\7z.exe",
-            r"C:\Program Files (x86)\7-Zip\7z.exe",
-        ]
-    )
+    if os.name == "nt":
+        candidates.extend(
+            [
+                r"C:\Program Files\7-Zip\7z.exe",
+                r"C:\Program Files (x86)\7-Zip\7z.exe",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                "/opt/homebrew/bin/7zz",
+                "/opt/homebrew/bin/7z",
+                "/usr/local/bin/7zz",
+                "/usr/local/bin/7z",
+            ]
+        )
     for candidate in candidates:
         path = Path(candidate)
-        if path.is_file():
+        if path.is_file() and _sevenzip_is_usable(str(path)):
             return str(path)
     return None
 
@@ -408,21 +439,16 @@ def _run_7z(
     cancel: threading.Event | None,
 ) -> None:
     log_path = job_dir / "7z.log"
-    args = [
-        sevenzip,
-        "a",
-        "-t7z",
-        f"-mx={level}",
-        f"-v{volume_bytes}b",
-        "-y",
-        "-sccUTF-8",
-        "-bsp1",
-        str(archive_path),
-        f".\\{source.name}",
-    ]
-    creationflags = 0
+    # Windows 版 7-Zip 用 ".\name" 相对路径，并提供 -sccUTF-8 控制台编码开关；
+    # Unix 版 7zz 会把 ".\name" 当成含反斜杠的文件名，也不支持 -scc，故按平台构造。
+    source_arg = f".\\{source.name}" if os.name == "nt" else source.name
+    args = [sevenzip, "a", "-t7z", f"-mx={level}", f"-v{volume_bytes}b", "-y"]
     if os.name == "nt":
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        args.append("-sccUTF-8")
+    args.extend(["-bsp1", str(archive_path), source_arg])
+    popen_kwargs: dict = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     reporter.progress("compress", 0, 0, "正在使用 7-Zip 压缩并分卷...")
     reporter.log("正在使用 7-Zip 压缩并分卷（大文件可能需要较长时间）...")
@@ -435,7 +461,7 @@ def _run_7z(
                 cwd=str(source.parent),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
-                creationflags=creationflags,
+                **popen_kwargs,
             )
             reporter.log("7-Zip 已启动，正在压缩并写入分卷...")
             while True:
@@ -687,10 +713,12 @@ def create_job(
     archive_format = requested_format
     if archive_format == "auto":
         archive_format = "7z" if sevenzip else "zip"
+        if not sevenzip:
+            reporter.log("未检测到可用的 7-Zip，自动改用 ZIP 分卷（收件人需先合并分卷）。")
     if archive_format == "7z" and not sevenzip:
         raise ConfigError(
-            "没有找到 7-Zip。请先安装 7-Zip（https://www.7-zip.org/），"
-            "或把压缩方式改为 ZIP。"
+            "没有找到可用的 7-Zip。请安装 7-Zip / 7zz，或设置 SEVENZIP_PATH，"
+            "也可以把压缩方式改为 ZIP（纯 Python，无需外部程序）。"
         )
 
     reporter.log(f"源路径：{source}")
@@ -816,22 +844,26 @@ def _build_instructions(archive_format: str, total: int, parts: list[dict]) -> s
     names = [item["name"] for item in parts]
     zip_name = names[0][:-4] if names[0].endswith(".001") else "merged.zip"
     if total <= 20:
-        command = f'copy /b "{names[0]}"' + "".join(f' + "{name}"' for name in names[1:])
-        command += f' "{zip_name}"'
-        return (
-            f"这是 ZIP 分卷，请把全部 {total} 个分卷下载到同一个文件夹，"
-            "然后在命令提示符中执行：\n\n"
-            f"{command}\n\n"
-            "合并完成后解压生成的 ZIP 文件。请勿重命名分卷。"
+        windows_cmd = f'copy /b "{names[0]}"' + "".join(
+            f' + "{name}"' for name in names[1:]
         )
+        windows_cmd += f' "{zip_name}"'
+        windows_hint = "Windows（命令提示符 CMD）"
+    else:
+        windows_cmd = (
+            f'$out=[IO.File]::Create("{zip_name}"); '
+            f'Get-ChildItem "{zip_name}.*" | Sort-Object Name | '
+            "ForEach-Object { $in=[IO.File]::OpenRead($_.FullName); "
+            "$in.CopyTo($out); $in.Close() }; $out.Close()"
+        )
+        windows_hint = "Windows（PowerShell，分卷较多时）"
+    posix_cmd = f"cat {zip_name}.* > {zip_name}"
     return (
-        f"这是 ZIP 分卷。请把全部 {total} 个分卷下载到同一个文件夹，"
-        "然后在 PowerShell 中执行以下命令合并：\n\n"
-        f'$out=[IO.File]::Create("merged.zip"); '
-        f'Get-ChildItem "{zip_name}.*" | Sort-Object Name | '
-        'ForEach-Object { $in=[IO.File]::OpenRead($_.FullName); $in.CopyTo($out); $in.Close() }; '
-        '$out.Close()\n\n'
-        "合并完成后解压 merged.zip。请勿重命名分卷。"
+        f"这是 ZIP 分卷，请把全部 {total} 个分卷下载到同一个文件夹，"
+        "保持原文件名，然后按收件人系统任选一种方式合并：\n\n"
+        f"{windows_hint}：\n{windows_cmd}\n\n"
+        f"macOS / Linux（终端，先 cd 到分卷所在目录）：\n{posix_cmd}\n\n"
+        f"合并完成后解压 {zip_name}。请勿重命名或缺少任何分卷。"
     )
 
 

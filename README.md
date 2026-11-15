@@ -5,16 +5,17 @@
 
 ![界面预览](screenshots/main.png)
 
-> **不要把 exe 放在带有 Low 完整性标签的受限目录里运行**（例如 DSH 工作区）。
+> **Windows 专属提示**：不要把 exe 放在带有 Low 完整性标签的受限目录里运行（例如 DSH 工作区）。
 > 这类目录中的 exe 会继承 Low 权限，无法创建任务文件并报 `[WinError 5] 拒绝访问`。
 > 请把 exe 或发布包复制到桌面、下载目录等普通位置后再运行。详见下方“v1.2.4 修复”。
 
 ## 下载
 
-- [最新 Releases](https://github.com/wxc45/qqvolmail/releases/latest)：Windows 单文件版与便携版。
-- [QQVolMail_v1.2.4_win64.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.2.4/QQVolMail_v1.2.4_win64.zip)：单文件启动器。
-- [QQVolMail_v1.2.4_win64_portable.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.2.4/QQVolMail_v1.2.4_win64_portable.zip)：便携文件夹版。
-- 也可以从源码运行，见下方“快速开始”。
+- [最新 Releases](https://github.com/wxc45/qqvolmail/releases/latest)：**Windows** 单文件版与便携版。
+- [QQVolMail_v1.2.4_win64.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.2.4/QQVolMail_v1.2.4_win64.zip)：单文件启动器（Windows）。
+- [QQVolMail_v1.2.4_win64_portable.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.2.4/QQVolMail_v1.2.4_win64_portable.zip)：便携文件夹版（Windows）。
+- **macOS 目前从源码运行**（零第三方依赖），也可以自行用 `packaging/macos/build_app.sh` 打成 `.app`，
+  见「macOS 快速开始」与「打包 macOS .app」。
 
 ## 功能
 
@@ -23,11 +24,14 @@
 - **逐卷发送**：每封邮件只带一个分卷，默认 20 MB，避免超过 QQ 邮箱普通附件上限。
 - **断点续传**：每个任务生成 `manifest.json`，记录已发送分卷；网络中断后只补发剩余分卷。
 - **发送前校验**：自动计算每个分卷的 SHA-256，收件人可核对完整性。
-- **安全**：源文件不写入设置；授权码可选保存，首次保存会弹窗提示，并使用 Windows DPAPI 加密。
+- **安全**：源文件不写入设置；授权码可选保存，首次保存会弹窗提示，
+  Windows 用 DPAPI 加密、macOS 用系统钥匙串保存（设置文件不含授权码）。
 - **图形界面**：文件/文件夹选择、邮箱连接测试、进度条、取消、失败续传。
 - **设置记忆**：记住输出目录、分卷大小、压缩方式、发件人、收件人、上次任务、窗口位置，
-  以及（可选）加密后的 SMTP 授权码。
-- **命令行**：方便配合 Windows 任务计划程序做定时发送。
+  以及（可选）SMTP 授权码。
+- **跨平台**：同一份代码支持 Windows / macOS / Linux；没有 7-Zip 时 `auto` 自动降级为
+  纯标准库 ZIP 分卷，macOS 开箱即用。
+- **命令行**：方便配合 Windows 任务计划程序或 macOS `launchd` / cron 做定时发送。
 
 ## v1.2.4 修复
 
@@ -57,15 +61,23 @@
 
 ## 环境要求
 
-- Windows 10/11
-- **直接使用 exe：不需要安装 Python**
-- 从源码运行：Python 3.10 及以上（已在 Python 3.12 / 3.14 测试）
-- [7-Zip](https://www.7-zip.org/)（推荐；默认安装在 `C:\Program Files\7-Zip\7z.exe`）
-  - 如果不想装 7-Zip，可在界面中选择「ZIP 分卷（兼容模式）」。
+| 平台 | 要求 |
+| --- | --- |
+| Windows 10/11 | 直接用 exe 不需要 Python；从源码运行需 Python 3.10+ |
+| macOS | Python 3.10+（需自带 tkinter；实测 macOS 27 / Python 3.13 / Tk 9.0 可用） |
+| Linux | Python 3.10+ 与 tkinter；建议安装 `xdg-open` |
+
+- 后端与界面只使用 **Python 标准库**，运行时零第三方依赖。
+- **7-Zip 完全可选**：Windows 默认查找 `C:\Program Files\7-Zip\7z.exe`，
+  macOS/Linux 查找 `7zz` / `7z` / `7za`（含 `/opt/homebrew/bin`、`/usr/local/bin`），
+  也可以用 `SEVENZIP_PATH` 指定。
+- 找不到可用的 7-Zip 时，`auto` 模式会**自动降级为 ZIP 分卷**，无需额外安装；
+  显式选择「7-Zip 原生分卷」才会报错。
+- macOS 使用系统自带的 `/usr/bin/security` 保存授权码到钥匙串。
 
 > 首次使用前，需要在 QQ 邮箱中开启 SMTP 服务并生成授权码，见下一节。
 
-## 快速开始（图形界面）
+## 快速开始（Windows 图形界面）
 
 **方式一：使用 exe（推荐给普通用户）**
 
@@ -111,6 +123,43 @@
 
 界面里的「如何获取授权码？」按钮也包含同样的步骤。
 
+## macOS 快速开始
+
+1. 确认 Python 自带 tkinter（系统自带的 Python 可能缺少，推荐 python.org 或 Homebrew 版本）：
+   ```bash
+   python3 -c "import tkinter; print('Tk', tkinter.TkVersion)"
+   ```
+2. 在仓库目录双击 **`run.command`**，或在终端执行：
+   ```bash
+   ./run.command
+   # 等价于
+   python3 launch_gui.pyw
+   ```
+   如果双击被系统拦截，先在终端执行一次 `chmod +x run.command`，
+   再到「系统设置 → 隐私与安全性」允许运行。
+3. 只压缩分卷（不发送，零依赖、无需 7-Zip）：
+   ```bash
+   python3 qqvolmail.py prepare \
+     --source ~/Documents/产品资料 \
+     --output ~/QQVolMail \
+     --volume-mb 20 --format auto
+   ```
+4. 「压缩方式」保持 `auto` 即可：没有 7-Zip 会自动降级为 ZIP 分卷；
+   装了官方 macOS 版 `7zz` 才会生成 `.7z.001` 原生分卷。
+5. 勾选「记住授权码」后，授权码存入 **macOS 钥匙串**（条目 `QQVolMail SMTP`），
+   `settings.json` 里只有 `keychain:<发件邮箱>` 引用，不含授权码；
+   首次保存会弹窗确认，系统可能要求一次钥匙串访问授权。
+6. 设置文件在 `~/Library/Application Support/QQVolMail/settings.json`，
+   旧版 `~/QQVolMail/settings.json` 会自动读取兼容。
+7. 收件人在 macOS / Linux 合并分卷：
+   ```bash
+   cat 产品资料.zip.* > 产品资料.zip
+   ```
+   邮件正文会自动同时给出 Windows 与 macOS/Linux 两套合并命令。
+
+> macOS 不需要管理员权限、UAC、SmartScreen，也不使用 `launcher/` 里的 C# 启动器。
+> `*.bat` 是 Windows 专用，`run.command` 是 macOS 专用。
+
 ## 设置持久化
 
 图形界面会自动保存以下设置，下次打开时恢复：
@@ -124,11 +173,19 @@
 
 ### 授权码保存说明
 
+| 平台 | 保存方式 | settings.json 内容 |
+| --- | --- | --- |
+| Windows | DPAPI 加密，与当前 Windows 登录用户绑定 | `dpapi:` + 密文 |
+| macOS | 系统钥匙串条目 `QQVolMail SMTP`（用 `/usr/bin/security` 读写） | **只有** `keychain:<发件邮箱>` 引用 |
+| 其他系统 | 不支持安全保存，请每次手动填写 | 不写入授权码 |
+
 - 默认勾选「记住授权码」，但**第一次保存前会弹窗提示**；只有确认后才会写入。
-- 授权码使用 **Windows DPAPI** 加密，加密数据与当前 Windows 登录用户绑定。
-- DPAPI 并不能防御已经登录该 Windows 账户的人或恶意程序；**不建议在共用电脑上保存**。
-- 取消勾选「记住授权码」会立即清除已经保存的授权码。
-- 如果设置文件被复制到另一个 Windows 用户，授权码将无法解密，软件会自动清除它。
+- macOS 用 `-X` 十六进制参数传给 `security`，授权码不会以明文出现在命令行；
+  取消勾选「记住授权码」会删除对应的钥匙串条目。
+- 早期版本在非 Windows 上使用的是 Base64（**明文等价**）。新版不再写入这种格式，
+  但读取旧设置时仍兼容；如果曾经勾选过，建议取消勾选后重新保存一次。
+- 任何平台都无法防御已登录本机账户的人或恶意程序；**不建议在共用电脑上保存**。
+- 如果 Windows 的加密设置被复制到另一个用户，授权码将无法解密，软件会自动清除它。
 
 以下内容**不会**保存：
 
@@ -138,16 +195,19 @@
 
 | 运行方式 | settings.json 位置 |
 | --- | --- |
-| 单文件 exe（启动器） | `<exe目录>\QQVolMail_runtime\data\settings.json` |
-| 便携文件夹版 | `<便携目录>\data\settings.json` |
-| 从源码运行 | `%APPDATA%\QQVolMail\settings.json` |
+| 单文件 exe（启动器，Windows） | `<exe目录>\QQVolMail_runtime\data\settings.json` |
+| 便携文件夹版（Windows） | `<便携目录>\data\settings.json` |
+| 从源码运行（Windows） | `%APPDATA%\QQVolMail\settings.json` |
+| 从源码运行（macOS） | `~/Library/Application Support/QQVolMail/settings.json` |
+| 从源码运行（Linux） | `$XDG_CONFIG_HOME/QQVolMail/settings.json` 或 `~/.config/QQVolMail/settings.json` |
+| `.app` 打包版（macOS） | 与源码版相同：`~/Library/Application Support/QQVolMail/settings.json` |
 
 exe 模式是绿色便携方式，设置跟随程序文件夹，不依赖 `%APPDATA%`。
 如果 exe 目录里还没有设置文件，会尝试读取旧的 `%APPDATA%\QQVolMail\settings.json`
-并迁移过来。
+并迁移过来。macOS 源码版也会自动兼容旧版写在 `~/QQVolMail/settings.json` 的设置。
 
 默认输出目录也随模式变化：exe 使用程序目录下的 `output`，源码运行使用
-`C:\Users\<用户名>\QQVolMail`。可以在界面中随时修改。
+`~/QQVolMail`（Windows 为 `C:\Users\<用户名>\QQVolMail`）。可以在界面中随时修改。
 
 如需清空所有记住的设置，退出软件后删除对应的 `settings.json` 即可。
 旧版本遗留的 `source` 字段会在启动时自动忽略，并在下次保存时移除。
@@ -157,8 +217,19 @@ exe 模式是绿色便携方式，设置跟随程序文件夹，不依赖 `%APPD
 所有命令都在本目录执行。建议把授权码放在环境变量里，避免出现在命令历史中：
 
 ```bat
+:: Windows（CMD）
 set QQ_SMTP_AUTH_CODE=你的16位授权码
 ```
+
+```bash
+# macOS / Linux
+export QQ_SMTP_AUTH_CODE=你的16位授权码
+```
+
+> 下面的示例是 Windows 写法（`python`、`^` 续行、`D:\` 路径）。
+> macOS / Linux 请换成 `python3`、`\` 续行和 `~/` 路径，**参数名完全一致**；
+> `qqvolmail.bat` 与 `copy config.example.json config.json` 那一步在 macOS 用
+> `cp config.example.json config.json`。
 
 ### 1. 只压缩分卷（不发送）
 
@@ -237,13 +308,20 @@ python qqvolmail.py send --config config.json
 
 ### ZIP 分卷
 
-邮件正文会给出 `copy /b` 合并命令，例如：
+邮件正文会**同时给出 Windows 与 macOS / Linux 两套命令**，收件人按自己的系统任选一种：
 
 ```bat
+:: Windows（命令提示符 CMD）
 copy /b "sample.zip.001" + "sample.zip.002" + "sample.zip.003" "sample.zip"
 ```
 
-合并后解压 `sample.zip`。分卷很多时，邮件正文会给出 PowerShell 合并命令。
+```bash
+# macOS / Linux（先 cd 到分卷所在目录）
+cat sample.zip.* > sample.zip
+```
+
+合并后解压 `sample.zip`。分卷很多时，Windows 部分会改用 PowerShell 合并命令，
+macOS / Linux 的 `cat` 命令不变。请勿重命名或缺少任何分卷。
 
 ## 输出目录结构
 
@@ -310,13 +388,21 @@ QQ 邮箱 SSL 端口是 `465`。检查网络、代理、防火墙；公司网络
 
 ### 提示找不到 7-Zip
 
-安装 [7-Zip](https://www.7-zip.org/)，或设置环境变量：
+Windows 安装 [7-Zip](https://www.7-zip.org/)，或设置环境变量：
 
 ```bat
 set SEVENZIP_PATH=C:\Program Files\7-Zip\7z.exe
 ```
 
-也可以在界面选择「ZIP 分卷（兼容模式）」。
+macOS 可以安装官方命令行版 `7zz`，或把已有二进制显式指定给程序：
+
+```bash
+export SEVENZIP_PATH=/opt/homebrew/bin/7zz
+```
+
+不安装也没关系：`auto` 模式会自动降级为 ZIP 分卷；只有命令行显式指定
+`--format 7z`（或配置里写死 `7z`）而本机又没有可用二进制时才会报错。
+程序会执行 `<bin> i` 做可用性探测，避免把 PATH 里同名的假 `7z` 命令当成真 7-Zip。
 
 ### 大文件压缩时看起来像“卡住”
 
@@ -341,28 +427,32 @@ v1.2.2 同时修复了两个会导致界面停止刷新的问题：后台事件�
 
 ### 控制台中文乱码
 
-在命令行先执行：
+Windows 在命令行先执行：
 
 ```bat
 chcp 65001
 ```
 
-图形界面不受影响。
+macOS / Linux 终端默认 UTF-8，无需额外设置；图形界面不受影响。
 
 ## 开发与测试
 
-```bat
-python -m unittest discover -s tests -v
+```bash
+python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-测试使用假的 SMTP 类，不会联网、不会发送真实邮件。覆盖：
+Windows 把 `python3` 换成 `python`。测试使用假的 SMTP 类，不会联网、不会发送真实邮件；
+macOS 钥匙串集成测试会创建一次性临时钥匙串并在结束时删除，**不会触碰登录钥匙串**
+（其余 GUI 测试使用内存替身）。覆盖：
 
-- 7-Zip 原生分卷、单卷重命名
-- ZIP 分卷、合并、哈希
+- 7-Zip 原生分卷、单卷重命名（未安装 7-Zip 时自动跳过）
+- ZIP 分卷、合并、哈希；邮件正文的 Windows / macOS 双平台合并命令
 - 文件夹压缩、中文路径、空目录
 - 邮件 MIME、附件名、正文
 - 发送成功、断点续传、认证失败、元数据不一致
-- 设置持久化、源文件不落盘、窗口位置恢复、授权码 DPAPI 加解密
+- 设置持久化、源文件不落盘、窗口位置恢复
+- 授权码：DPAPI 分支回归、钥匙串引用与真实临时钥匙串读写删、无安全存储时拒绝明文回退
+- 平台适配：Windows `.\` 与 `-sccUTF-8` / POSIX 参数、macOS 设置目录与 `open`、字体与图标
 
 ## 目录结构
 
@@ -370,16 +460,18 @@ python -m unittest discover -s tests -v
 qqvolmail/
 ├─ qqvolmail.py          # 核心后端 + CLI
 ├─ qqvolmail_gui.py      # tkinter 图形界面
-├─ launch_gui.pyw        # 无控制台启动入口
-├─ launcher/             # 单文件启动器（C# 源码 + 打包脚本）
-├─ 启动 QQ 分卷邮递.bat
+├─ launch_gui.pyw        # 无控制台启动入口（各平台通用）
+├─ run.command           # macOS 双击启动入口
+├─ launcher/             # Windows 单文件启动器（C# 源码 + 打包脚本）
+├─ packaging/macos/      # macOS .app 打包脚本
+├─ 启动 QQ 分卷邮递.bat  # Windows 双击启动入口
 ├─ config.example.json
-├─ qqvolmail.bat         # 命令行包装
-├─ assets/               # 图标、exe 版本信息
+├─ qqvolmail.bat         # Windows 命令行包装
+├─ assets/               # app.ico / app.png / exe 版本信息
 ├─ screenshots/          # 界面预览
 └─ tests/
-   ├─ test_core.py        # 分卷、邮件、SMTP、续传
-   └─ test_gui_settings.py  # 设置持久化、窗口位置
+   ├─ test_core.py          # 分卷、邮件、SMTP、续传、平台参数、合并指引
+   └─ test_gui_settings.py  # 设置持久化、授权码保险库、macOS 路径/字体/图标
 ```
 
 ## 已打包的 exe
@@ -419,4 +511,29 @@ C# 编译器生成 `dist\QQ分卷邮递.exe`。这样单文件启动器不需要
 .NET Framework 4.x 运行。启动器通过 `launcher\launcher.manifest`
 请求 `requireAdministrator`，主程序通过 PyInstaller `--uac-admin` 内嵌
 同样的清单；两者缺一不可。
+
+## 打包 macOS .app（可选）
+
+运行时依旧零第三方依赖；只有**构建这一步**需要 PyInstaller：
+
+```bash
+python3 -m pip install pyinstaller
+./packaging/macos/build_app.sh
+```
+
+脚本会：
+
+1. 用 `sips` + `iconutil` 从 `assets/app.png` 生成 `assets/app.icns`；
+2. 用 `--windowed --onedir` 生成 `dist_mac/QQ分卷邮递.app`，并把 `assets/` 一起打进包；
+3. 打印产物路径与首次运行注意事项。
+
+产物内置 Python 运行时，但**没有 Apple 签名与公证**：首次打开可能需要在
+「系统设置 → 隐私与安全性」点击「仍要打开」，或执行：
+
+```bash
+xattr -dr com.apple.quarantine "dist_mac/QQ分卷邮递.app"
+```
+
+`.app` 版与 macOS 源码版共用 `~/Library/Application Support/QQVolMail/settings.json`，
+不会把设置写进 app 包内部。Windows 的 exe 打包流程见上一节，两者互不影响。
 

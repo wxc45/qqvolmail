@@ -19,3 +19,12 @@ test_tmp/
 test_gui/
 test_gui_send/
 .venv/
+
+# macOS 构建产物
+.DS_Store
+dist_mac/
+packaging/macos/build/
+assets/app.icns
+
+# WorkBuddy 工作区数据（非项目代码）
+.workbuddy/
