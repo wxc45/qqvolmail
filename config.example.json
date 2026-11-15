@@ -1,0 +1,20 @@
+{
+  "source": "D:\\待发送资料",
+  "output": "D:\\QQVolMail",
+  "volume_mb": 20,
+  "format": "auto",
+  "level": 5,
+  "sender": "123456789@qq.com",
+  "recipients": [
+    "friend@example.com"
+  ],
+  "subject_prefix": "文件分卷",
+  "display_name": "QQ 分卷邮递",
+  "smtp_host": "smtp.qq.com",
+  "smtp_port": 465,
+  "smtp_security": "auto",
+  "send_interval": 3,
+  "max_retries": 3,
+  "timeout": 90,
+  "auth_code_env": "QQ_SMTP_AUTH_CODE"
+}
