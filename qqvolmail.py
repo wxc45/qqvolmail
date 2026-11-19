@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """QQ 分卷邮递。
 
@@ -301,25 +301,93 @@ def read_json(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _sevenzip_is_usable(path: str) -> bool:
+    """轻量探测：`<bin> i` 必须成功且输出含 7-Zip 标识，排除壳脚本与冒名命令。"""
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [path, "i"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+            **kwargs,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and b"7-Zip" in (result.stdout or b"")
+
+
+def _path_candidates(names: tuple[str, ...]) -> list[str]:
+    """列出 PATH 中所有同名可执行文件。
+
+    shutil.which 只返回第一个命中项；若 PATH 前面存在坏的 7zz（或转发壳脚本），
+    真正的 7-Zip 会被直接忽略。这里按 PATH 顺序把所有候选都交给探测。
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        try:
+            resolved = os.path.realpath(path)
+        except OSError:
+            return
+        if resolved not in seen:
+            seen.add(resolved)
+            candidates.append(path)
+
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            add(found)
+    path_env = os.environ.get("PATH") or os.defpath
+    for directory in path_env.split(os.pathsep):
+        if not directory:
+            continue
+        for name in names:
+            candidate = os.path.join(directory, name)
+            try:
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    add(candidate)
+            except OSError:
+                continue
+    return candidates
+
+
 def find_7zip() -> str | None:
+    """定位可用的 7-Zip；返回 None 时调用方应降级为 ZIP 分卷。"""
     env_path = os.environ.get("SEVENZIP_PATH", "").strip()
     candidates: list[str] = []
     if env_path:
         candidates.append(env_path)
-    for name in ("7z.exe", "7z", "7za.exe", "7za"):
-        found = shutil.which(name)
-        if found:
-            candidates.append(found)
-    candidates.extend(
-        [
-            r"C:\Program Files\7-Zip\7z.exe",
-            r"C:\Program Files (x86)\7-Zip\7z.exe",
-        ]
-    )
+    names = ("7z.exe", "7z", "7za.exe", "7za") if os.name == "nt" else ("7zz", "7z", "7za")
+    candidates.extend(_path_candidates(names))
+    if os.name == "nt":
+        candidates.extend(
+            [
+                r"C:\Program Files\7-Zip\7z.exe",
+                r"C:\Program Files (x86)\7-Zip\7z.exe",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                "/opt/homebrew/bin/7zz",
+                "/opt/homebrew/bin/7z",
+                "/usr/local/bin/7zz",
+                "/usr/local/bin/7z",
+            ]
+        )
+    seen: set[str] = set()
     for candidate in candidates:
-        path = Path(candidate)
-        if path.is_file():
-            return str(path)
+        key = os.path.normcase(os.path.abspath(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isfile(candidate) and _sevenzip_is_usable(candidate):
+            return candidate
     return None
 
 
@@ -429,9 +497,9 @@ def _run_7zip_command(
 ) -> None:
     """运行 7-Zip，带取消与心跳；密码只存在于进程参数中，不写日志。"""
     log_path = job_dir / "7z.log"
-    creationflags = 0
+    popen_kwargs: dict = {}
     if os.name == "nt":
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     started_at = time.monotonic()
     last_heartbeat = started_at
@@ -442,7 +510,7 @@ def _run_7zip_command(
                 cwd=str(cwd),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
-                creationflags=creationflags,
+                **popen_kwargs,
             )
             reporter.log(started_text)
             while True:
@@ -491,20 +559,14 @@ def _run_7z(
     cancel: threading.Event | None,
     password: str = "",
 ) -> None:
-    args = [
-        sevenzip,
-        "a",
-        "-t7z",
-        f"-mx={level}",
-        f"-v{volume_bytes}b",
-        "-y",
-        "-sccUTF-8",
-        "-bsp1",
-    ]
+    source_arg = f".\\{source.name}" if os.name == "nt" else source.name
+    args = [sevenzip, "a", "-t7z", f"-mx={level}", f"-v{volume_bytes}b", "-y"]
+    if os.name == "nt":
+        args.append("-sccUTF-8")
     if password:
         args.append(f"-p{password}")
         args.append("-mhe=on")
-    args.extend([str(archive_path), f".\\{source.name}"])
+    args.extend(["-bsp1", str(archive_path), source_arg])
 
     reporter.progress("compress", 0, 0, "正在使用 7-Zip 压缩并分卷...")
     mode = "加密压缩" if password else "压缩"
@@ -737,10 +799,12 @@ def create_job(
     archive_format = requested_format
     if archive_format == "auto":
         archive_format = "7z" if sevenzip else "zip"
+        if not sevenzip:
+            reporter.log("未检测到可用的 7-Zip，自动改用 ZIP 分卷（收件人需先合并分卷）。")
     if archive_format == "7z" and not sevenzip:
         raise ConfigError(
-            "没有找到 7-Zip。请先安装 7-Zip（https://www.7-zip.org/），"
-            "或把压缩方式改为 ZIP。"
+            "没有找到可用的 7-Zip。请安装 7-Zip / 7zz，或设置 SEVENZIP_PATH，"
+            "也可以把压缩方式改为 ZIP（纯 Python，无需外部程序）。"
         )
     password = validate_archive_password(config.archive_password)
     if password and not sevenzip:
@@ -887,39 +951,33 @@ def _build_instructions(
         names = [item["name"] for item in parts]
         zip_name = names[0][:-4] if names[0].endswith(".001") else "merged.zip"
         if total <= 20:
-            command = f'copy /b "{names[0]}"' + "".join(
+            windows_cmd = f'copy /b "{names[0]}"' + "".join(
                 f' + "{name}"' for name in names[1:]
             )
-            command += f' "{zip_name}"'
-            base = (
-                f"这是 ZIP 分卷，请把全部 {total} 个分卷下载到同一个文件夹，"
-                "然后在命令提示符中执行：\n\n"
-                f"{command}\n\n"
-                "合并完成后解压生成的 ZIP 文件。请勿重命名分卷。"
-            )
+            windows_cmd += f' "{zip_name}"'
+            windows_hint = "Windows（命令提示符 CMD）"
         else:
-            base = (
-                f"这是 ZIP 分卷。请把全部 {total} 个分卷下载到同一个文件夹，"
-                "然后在 PowerShell 中执行以下命令合并：\n\n"
-                f'$out=[IO.File]::Create("merged.zip"); '
+            windows_cmd = (
+                f'$out=[IO.File]::Create("{zip_name}"); '
                 f'Get-ChildItem "{zip_name}.*" | Sort-Object Name | '
-                "ForEach-Object { $in=[IO.File]::OpenRead($_.FullName); $in.CopyTo($out); $in.Close() }; "
-                '$out.Close()\n\n'
-                "合并完成后解压 merged.zip。请勿重命名分卷。"
+                "ForEach-Object { $in=[IO.File]::OpenRead($_.FullName); "
+                "$in.CopyTo($out); $in.Close() }; $out.Close()"
             )
+            windows_hint = "Windows（PowerShell，分卷较多时）"
+        posix_cmd = f"cat {zip_name}.* > {zip_name}"
+        base = (
+            f"这是 ZIP 分卷，请把全部 {total} 个分卷下载到同一个文件夹，"
+            "保持原文件名，然后按收件人系统任选一种方式合并：\n\n"
+            f"{windows_hint}：\n{windows_cmd}\n\n"
+            f"macOS / Linux（终端，先 cd 到分卷所在目录）：\n{posix_cmd}\n\n"
+            f"合并完成后解压 {zip_name}。请勿重命名或缺少任何分卷。"
+        )
 
     if encrypted:
-        if archive_format == "zip":
-            base += (
-                "\n\n加密提示：压缩包已使用 AES-256 加密。"
-                "Windows 资源管理器通常无法打开 AES 加密 ZIP，请使用 7-Zip 或 WinRAR 解压并输入密码。"
-                "密码由发件人通过其他渠道提供，本邮件不会包含密码。"
-            )
-        else:
-            base += (
-                "\n\n加密提示：压缩包已使用 AES-256 加密，文件名也已隐藏。"
-                "解压时需要输入密码；密码由发件人通过其他渠道提供，本邮件不会包含密码。"
-            )
+        base += (
+            "\n\n加密提示：压缩包已使用 AES-256 加密，文件名也已隐藏。"
+            "解压时需要输入密码；密码由发件人通过其他渠道提供，本邮件不会包含密码。"
+        )
     return base
 
 

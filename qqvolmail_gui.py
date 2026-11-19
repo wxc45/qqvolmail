@@ -9,6 +9,7 @@ import ctypes
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -63,8 +64,15 @@ AMBER = "#B7791F"
 AMBER_SOFT = "#FFF7E6"
 LOG_BG = "#F8FAFC"
 
-FONT = "Microsoft YaHei UI"
-MONO = "Consolas"
+if os.name == "nt":
+    FONT = "Microsoft YaHei UI"
+    MONO = "Consolas"
+elif sys.platform == "darwin":
+    FONT = "PingFang SC"
+    MONO = "Menlo"
+else:
+    FONT = "DejaVu Sans"
+    MONO = "DejaVu Sans Mono"
 
 FORMAT_LABELS = {
     "7-Zip 原生分卷（推荐）": "auto",
@@ -96,9 +104,43 @@ def _open_path(path: Path) -> None:
         else:
             import subprocess
 
-            subprocess.Popen(["xdg-open", str(path)])
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
     except Exception as exc:
         messagebox.showerror("无法打开", f"无法打开文件夹：\n{path}\n\n{exc}")
+
+
+def _asset_dir() -> Path:
+    """兼容 PyInstaller 的 _MEIPASS 资源目录。"""
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        return Path(bundle) / "assets"
+    return Path(__file__).resolve().parent / "assets"
+
+
+def _apply_window_icon(window: tk.Misc) -> None:
+    """Windows 用 .ico；macOS/Linux 用 .png（Aqua Tk 的 iconbitmap 不可用）。"""
+    assets = _asset_dir()
+    if os.name == "nt":
+        ico = assets / "app.ico"
+        if ico.is_file():
+            try:
+                window.iconbitmap(default=str(ico))
+            except Exception:
+                pass
+        return
+    png = assets / "app.png"
+    if not png.is_file():
+        return
+    try:
+        image = tk.PhotoImage(file=str(png))
+        window.iconphoto(True, image)
+        # PhotoImage 必须保持引用，否则被 GC 后图标会消失。
+        window._qqvolmail_icon = image  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def _is_frozen() -> bool:
@@ -115,9 +157,14 @@ def _data_dir() -> Path:
     override = os.environ.get("QQVOLMAIL_DATA_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    if _is_frozen():
+    # Windows 便携版保持「设置跟随程序目录」；macOS 的 .app 包内部不应写入用户数据。
+    if _is_frozen() and sys.platform != "darwin":
         return _app_dir() / "data"
-    return Path(os.environ.get("APPDATA") or Path.home()) / "QQVolMail"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "QQVolMail"
+    if os.name == "nt":
+        return Path(os.environ.get("APPDATA") or Path.home()) / "QQVolMail"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "QQVolMail"
 
 
 def _settings_path() -> Path:
@@ -125,24 +172,29 @@ def _settings_path() -> Path:
 
 
 def _legacy_settings_path() -> Path | None:
-    """exe 便携版可读取旧版/源码版留在 APPDATA 的设置。"""
-    if not _is_frozen():
-        return None
-    base = os.environ.get("APPDATA") or str(Path.home())
-    legacy = Path(base) / "QQVolMail" / "settings.json"
-    try:
-        if legacy.resolve() == _settings_path().resolve():
-            return None
-    except Exception:
-        pass
-    return legacy
+    """读取旧版/跨平台遗留设置，便于平滑迁移到新位置。"""
+    candidates: list[Path] = []
+    if _is_frozen():
+        base = os.environ.get("APPDATA") or str(Path.home())
+        candidates.append(Path(base) / "QQVolMail" / "settings.json")
+    if sys.platform == "darwin":
+        # 早期版本在 macOS 上会直接把设置写到 home 目录。
+        candidates.append(Path.home() / "QQVolMail" / "settings.json")
+    for legacy in candidates:
+        try:
+            if not legacy.is_file() or legacy.resolve() == _settings_path().resolve():
+                continue
+            return legacy
+        except Exception:
+            continue
+    return None
 
 
 def _default_output_dir() -> Path:
     override = os.environ.get("QQVOLMAIL_DATA_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve().parent / "output"
-    if _is_frozen():
+    if _is_frozen() and sys.platform != "darwin":
         return _app_dir() / "output"
     return Path.home() / "QQVolMail"
 
@@ -226,24 +278,162 @@ def _dpapi_transform(data: bytes, protect: bool) -> bytes:
         kernel32.LocalFree(output_blob.pbData)
 
 
-def protect_secret(secret: str) -> str:
-    """优先使用 DPAPI 加密，非 Windows 环境使用 Base64 兼容保存。"""
+# ---------------------------------------------------------------------------
+# macOS 钥匙串：系统自带 /usr/bin/security，无需第三方依赖
+# ---------------------------------------------------------------------------
+
+KEYCHAIN_SERVICE = "QQVolMail SMTP"
+KEYCHAIN_DEFAULT_ACCOUNT = "smtp-auth-code"
+_SECURITY_BIN = "/usr/bin/security"
+
+
+def _keychain_available() -> bool:
+    return sys.platform == "darwin" and Path(_SECURITY_BIN).is_file()
+
+
+def _keychain_args() -> list[str]:
+    """测试隔离用：QQVOLMAIL_KEYCHAIN_PATH 指定临时钥匙串；生产为空则用登录钥匙串。"""
+    override = os.environ.get("QQVOLMAIL_KEYCHAIN_PATH", "").strip()
+    return [str(Path(override).expanduser())] if override else []
+
+
+def _run_security(args: list[str]) -> bytes:
+    if not _keychain_available():
+        raise OSError("macOS 钥匙串不可用（未找到 /usr/bin/security）")
+    try:
+        proc = subprocess.run(
+            [_SECURITY_BIN, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OSError(f"调用钥匙串失败：{exc}") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip()
+        raise OSError(f"钥匙串操作失败（退出码 {proc.returncode}）：{detail}")
+    return proc.stdout
+
+
+def _keychain_set(account: str, secret: str) -> None:
+    """-X 传十六进制，避免授权码明文出现在命令行；-U 覆盖同名旧条目。"""
+    _run_security(
+        [
+            "add-generic-password",
+            "-U",
+            "-a", account,
+            "-s", KEYCHAIN_SERVICE,
+            "-X", secret.encode("utf-8").hex(),
+            *_keychain_args(),
+        ]
+    )
+
+
+def _keychain_get(account: str) -> str:
+    output = _run_security(
+        [
+            "find-generic-password",
+            "-a", account,
+            "-s", KEYCHAIN_SERVICE,
+            "-w",
+            *_keychain_args(),
+        ]
+    )
+    # `security find-generic-password -w` 会在密码后追加一个换行。
+    if output.endswith(b"\n"):
+        output = output[:-1]
+    return output.decode("utf-8")
+
+
+def _keychain_delete(account: str) -> None:
+    try:
+        _run_security(
+            [
+                "delete-generic-password",
+                "-a", account,
+                "-s", KEYCHAIN_SERVICE,
+                *_keychain_args(),
+            ]
+        )
+    except OSError:
+        # 条目本来就存在与否都不影响用户取消勾选的语义。
+        pass
+
+
+def _secret_storage_available() -> bool:
+    return os.name == "nt" or _keychain_available()
+
+
+def _secret_storage_label() -> str:
+    if os.name == "nt":
+        return "DPAPI 加密保存"
+    if _keychain_available():
+        return "macOS 钥匙串保存"
+    return "当前系统不支持保存"
+
+
+def _secret_storage_details() -> str:
+    if os.name == "nt":
+        return (
+            "Windows DPAPI 加密（与当前 Windows 用户绑定）\n\n"
+            f"保存位置：\n{_settings_path()}\n\n"
+            "提示：即使加密，能登录当前 Windows 账户的人或程序仍可能读取授权码。\n"
+            "不建议在共用电脑上保存。"
+        )
+    return (
+        "macOS 钥匙串（系统加密；设置文件只保存引用，不含授权码）\n\n"
+        f"钥匙串条目：{KEYCHAIN_SERVICE}\n"
+        f"设置文件：\n{_settings_path()}\n\n"
+        "提示：首次读写时系统可能要求授权；能解锁当前账户钥匙串的人或程序"
+        "仍可能读取授权码。\n不建议在共用电脑上保存。"
+    )
+
+
+def _normalize_account(account: str) -> str:
+    cleaned = "".join(ch for ch in str(account or "").strip() if ch.isprintable())
+    return cleaned[:120] or KEYCHAIN_DEFAULT_ACCOUNT
+
+
+def protect_secret(secret: str, account: str = KEYCHAIN_DEFAULT_ACCOUNT) -> str:
+    """把授权码存入系统保险库，返回写入 settings.json 的引用（不含明文）。
+
+    Windows 仍使用 DPAPI（密文写进 settings）；macOS 存入钥匙串，
+    settings 里只留 ``keychain:<account>`` 引用。
+    """
     raw = secret.encode("utf-8")
     if os.name == "nt":
         return "dpapi:" + base64.b64encode(_dpapi_transform(raw, True)).decode("ascii")
-    return "b64:" + base64.b64encode(raw).decode("ascii")
+    if not _keychain_available():
+        raise OSError(
+            "当前系统没有可用的安全存储（仅支持 Windows DPAPI / macOS 钥匙串），"
+            "请每次手动填写授权码"
+        )
+    normalized = _normalize_account(account)
+    _keychain_set(normalized, secret)
+    return "keychain:" + normalized
 
 
 def unprotect_secret(value: str) -> str:
     if value.startswith("dpapi:"):
         if os.name != "nt":
             raise ValueError("此授权码由 Windows DPAPI 加密，当前系统无法解密")
-        raw = _dpapi_transform(base64.b64decode(value[6:]), False)
-        return raw.decode("utf-8")
+        return _dpapi_transform(base64.b64decode(value[6:]), False).decode("utf-8")
+    if value.startswith("keychain:"):
+        if not _keychain_available():
+            raise ValueError("此授权码保存在 macOS 钥匙串中，当前系统无法读取")
+        return _keychain_get(value[len("keychain:"):])
     if value.startswith("b64:"):
+        # 旧版遗留数据只读兼容；新版本不再以 Base64（明文等价）形式写入。
         return base64.b64decode(value[4:]).decode("utf-8")
     # 兼容极早期版本可能存在的明文值。
     return value
+
+
+def forget_secret(value: str) -> None:
+    """取消“记住授权码”时清除系统保险库中的条目。"""
+    if isinstance(value, str) and value.startswith("keychain:"):
+        _keychain_delete(value[len("keychain:"):])
 
 
 def _saved_window_geometry(settings: dict, screen_w: int, screen_h: int) -> str | None:
@@ -366,12 +556,7 @@ class App:
             self.root.geometry(f"{width}x{height}+{x}+{y}")
         self.root.minsize(840, 740)
         self.root.configure(bg=BG)
-        icon_path = Path(__file__).resolve().parent / "assets" / "app.ico"
-        if icon_path.is_file():
-            try:
-                self.root.iconbitmap(default=str(icon_path))
-            except Exception:
-                pass
+        _apply_window_icon(self.root)
 
     def _build_styles(self) -> None:
         style = ttk.Style(self.root)
@@ -556,6 +741,10 @@ class App:
         self._build_account_card(main)
         self._build_log_card(main)
         self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+        if sys.platform.startswith("linux"):
+            # X11 的滚轮事件是 Button-4/5，不带 delta。
+            self.root.bind_all("<Button-4>", self._on_mousewheel)
+            self.root.bind_all("<Button-5>", self._on_mousewheel)
 
     def _on_mousewheel(self, event: tk.Event) -> None:
         if isinstance(event.widget, (tk.Text, ttk.Combobox, ttk.Spinbox)):
@@ -566,8 +755,24 @@ class App:
             return
         if last - first >= 0.999:
             return
-        delta = -1 if event.delta > 0 else 1
-        self.main_canvas.yview_scroll(delta * 3, "units")
+        delta = getattr(event, "delta", 0)
+        number = getattr(event, "num", 0)
+        if number == 4:
+            direction = -1
+        elif number == 5:
+            direction = 1
+        elif delta > 0:
+            direction = -1
+        elif delta < 0:
+            direction = 1
+        else:
+            return
+        # Windows 的 delta 常是 ±120 的倍数，macOS Aqua 多为 ±1：先按符号归一化，
+        # 再对 Windows 的连续快速滚动做有限加速。
+        steps = 3
+        if sys.platform != "darwin" and abs(delta) >= 240:
+            steps = min(9, 3 * (abs(delta) // 120))
+        self.main_canvas.yview_scroll(direction * steps, "units")
 
     def _build_header(self) -> None:
         header = tk.Frame(self.root, bg=BG)
@@ -835,7 +1040,7 @@ class App:
         self.remember_auth_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             auth_box,
-            text="记住授权码（DPAPI 加密保存）",
+            text=f"记住授权码（{_secret_storage_label()}）",
             variable=self.remember_auth_var,
             command=self._on_remember_auth_toggled,
             style="Small.TCheckbutton",
@@ -1026,9 +1231,19 @@ class App:
             auth_code = self.auth_var.get().replace(" ", "").strip()
             if auth_code:
                 try:
-                    data["auth_code"] = protect_secret(auth_code)
-                except Exception:
-                    pass
+                    data["auth_code"] = protect_secret(
+                        auth_code, account=self.sender_var.get().strip()
+                    )
+                except Exception as exc:
+                    # 不支持安全存储的平台绝不退回明文保存。
+                    self.remember_auth_var.set(False)
+                    self._auth_consent = False
+                    data["remember_auth"] = False
+                    data["auth_consent"] = False
+                    try:
+                        self._log(f"当前系统无法安全保存授权码（{exc}），已改为不保存。", "warn")
+                    except Exception:
+                        pass
         try:
             if self.root.state() == "normal":
                 width = self.root.winfo_width()
@@ -1057,18 +1272,17 @@ class App:
         self.auth_entry.configure(show="" if self.show_auth_var.get() else "*")
 
     def _confirm_auth_storage(self) -> bool:
-        protection = (
-            "Windows DPAPI 加密（与当前 Windows 用户绑定）"
-            if os.name == "nt"
-            else "Base64 编码（仅兼容，不具备强加密）"
-        )
+        if not _secret_storage_available():
+            messagebox.showerror(
+                "无法保存授权码",
+                "当前系统没有可用的安全存储（仅支持 Windows DPAPI 与 macOS 钥匙串）。\n"
+                "请每次手动填写 SMTP 授权码。",
+            )
+            return False
         return messagebox.askyesno(
             "保存 SMTP 授权码？",
             "将把 SMTP 授权码使用以下方式保存到本机：\n\n"
-            f"{protection}\n\n"
-            f"保存位置：\n{_settings_path()}\n\n"
-            "提示：即使加密，能登录当前 Windows 账户的人或程序仍可能读取授权码。\n"
-            "不建议在共用电脑上保存。\n\n"
+            f"{_secret_storage_details()}\n\n"
             "是否保存授权码？",
             icon=messagebox.WARNING,
             default="no",
@@ -1085,9 +1299,16 @@ class App:
                     return
                 self._auth_consent = True
             self._save_settings()
-            self._log("已开启授权码记忆，授权码将加密保存到本机。", "warn")
+            self._log(
+                f"已开启授权码记忆，授权码将使用「{_secret_storage_label()}」保存到本机。",
+                "warn",
+            )
         else:
             self._auth_consent = False
+            # settings.json 里只有引用；真正需要清除的是系统保险库中的条目。
+            forget_secret(str(self.settings.get("auth_code") or ""))
+            if isinstance(self.settings, dict):
+                self.settings.pop("auth_code", None)
             self._save_settings()
             self._log("已关闭授权码记忆，保存的授权码已清除。", "warn")
 
@@ -1205,11 +1426,8 @@ class App:
             raise ConfigError(f"分卷大小必须在 1–{MAX_VOLUME_MB} MB 之间。")
 
         archive_format = FORMAT_LABELS.get(self.format_var.get(), "auto")
-        if archive_format == "auto" and not find_7zip():
-            raise ConfigError(
-                "没有找到 7-Zip。请安装 7-Zip 后重试，"
-                "或把“压缩方式”改为“ZIP 分卷（兼容模式）”。"
-            )
+        # auto 与后端 create_job 保持一致：没有可用 7-Zip 时由后端自动降级为 ZIP，
+        # 这里不再提前拒绝，避免图形界面与命令行行为不一致。
 
         archive_password = ""
         if self.encrypt_var.get():
@@ -1671,12 +1889,7 @@ class App:
         win.resizable(False, False)
         win.transient(self.root)
         win.grab_set()
-        icon_path = Path(__file__).resolve().parent / "assets" / "app.ico"
-        if icon_path.is_file():
-            try:
-                win.iconbitmap(default=str(icon_path))
-            except Exception:
-                pass
+        _apply_window_icon(win)
         width, height = 560, 440
         x = self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2
@@ -1720,7 +1933,10 @@ class App:
         note.pack(fill="x", padx=24, pady=(10, 0))
         tk.Label(
             note,
-            text="安全提示：授权码默认不保存；勾选“记住授权码”后会用 Windows DPAPI 加密保存，首次会提示。",
+            text=(
+                "安全提示：勾选“记住授权码”后，Windows 用 DPAPI、macOS 用系统钥匙串"
+                "加密保存（设置文件不含授权码），首次会提示；共用电脑请勿勾选。"
+            ),
             bg=AMBER_SOFT, fg=AMBER, font=(FONT, 8), anchor="w", justify="left",
             wraplength=480, padx=10, pady=7,
         ).pack(fill="x")

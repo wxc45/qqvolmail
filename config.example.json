@@ -1,6 +1,6 @@
 {
-  "source": "D:\\待发送资料",
-  "output": "D:\\QQVolMail",
+  "source": "~/Documents/待发送资料",
+  "output": "~/QQVolMail",
   "volume_mb": 20,
   "format": "auto",
   "level": 5,
