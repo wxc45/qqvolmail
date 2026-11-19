@@ -37,6 +37,7 @@ from qqvolmail import (
     parse_email_list,
     send_job,
     test_smtp,
+    validate_archive_password,
     validate_single_email,
 )
 
@@ -697,6 +698,93 @@ class App:
             state="readonly",
         )
         combo.pack(fill="x")
+        self.format_combo = combo
+
+        self.encrypt_var = tk.BooleanVar(value=False)
+        self.archive_password_var = tk.StringVar()
+        self.archive_password_confirm_var = tk.StringVar()
+        self.show_archive_password_var = tk.BooleanVar(value=False)
+
+        self.encrypt_check = tk.Checkbutton(
+            body,
+            text="加密压缩包（AES-256，仅 7-Zip）",
+            variable=self.encrypt_var,
+            command=self._toggle_encryption,
+            bg=WHITE,
+            fg=TEXT,
+            activebackground=WHITE,
+            activeforeground=TEXT,
+            selectcolor=WHITE,
+            font=(FONT, 10),
+            cursor="hand2",
+            anchor="w",
+        )
+        self.encrypt_check.grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(7, 0)
+        )
+
+        self.encrypt_hint = tk.Label(
+            body,
+            text="密码只用于本次压缩，不会保存、不会写入邮件；忘记后无法恢复。",
+            bg=WHITE,
+            fg=FAINT,
+            font=(FONT, 8),
+            anchor="w",
+            justify="left",
+        )
+        self.encrypt_hint.grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(3, 0)
+        )
+        self.encrypt_hint.grid_remove()
+
+        self.password_box = tk.Frame(body, bg=WHITE)
+        self.password_box.grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+        )
+        self.password_box.grid_columnconfigure(0, weight=1)
+        self.password_box.grid_columnconfigure(1, weight=1)
+
+        pw_left = tk.Frame(self.password_box, bg=WHITE)
+        pw_left.grid(row=0, column=0, sticky="ew", padx=(0, 7))
+        tk.Label(
+            pw_left,
+            text="压缩密码（至少 4 位）",
+            bg=WHITE,
+            fg=MUTED,
+            font=(FONT, 9),
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 3))
+        self.archive_password_entry = ttk.Entry(
+            pw_left, textvariable=self.archive_password_var, show="*"
+        )
+        self.archive_password_entry.pack(fill="x")
+
+        pw_right = tk.Frame(self.password_box, bg=WHITE)
+        pw_right.grid(row=0, column=1, sticky="ew", padx=(7, 0))
+        tk.Label(
+            pw_right,
+            text="确认密码",
+            bg=WHITE,
+            fg=MUTED,
+            font=(FONT, 9),
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 3))
+        self.archive_password_confirm_entry = ttk.Entry(
+            pw_right, textvariable=self.archive_password_confirm_var, show="*"
+        )
+        self.archive_password_confirm_entry.pack(fill="x")
+
+        self.show_archive_password_check = ttk.Checkbutton(
+            self.password_box,
+            text="显示",
+            variable=self.show_archive_password_var,
+            command=self._toggle_archive_password_visibility,
+            cursor="hand2",
+        )
+        self.show_archive_password_check.grid(
+            row=0, column=2, sticky="e", padx=(10, 0), pady=(19, 0)
+        )
+        self.password_box.grid_remove()
 
         self.volume_hint = tk.Label(
             body,
@@ -907,6 +995,15 @@ class App:
         self.volume_var.set(str(settings.get("volume", DEFAULT_VOLUME_MB)))
         fmt_value = str(settings.get("format", "auto"))
         self.format_var.set(FORMAT_LABEL_BY_VALUE.get(fmt_value, FORMAT_LABEL_BY_VALUE["auto"]))
+        # 压缩密码只用于本次任务，绝不从设置或旧任务恢复。
+        self.encrypt_var.set(False)
+        self.archive_password_var.set("")
+        self.archive_password_confirm_var.set("")
+        self.show_archive_password_var.set(False)
+        self.encrypt_hint.grid_remove()
+        self.password_box.grid_remove()
+        self.format_combo.configure(state="readonly")
+        self._toggle_archive_password_visibility()
         last_job = settings.get("last_job")
         if last_job:
             self._last_job_dir = Path(str(last_job))
@@ -1026,6 +1123,30 @@ class App:
             color = FAINT
         self.volume_hint.configure(text=text, fg=color)
 
+    def _toggle_archive_password_visibility(self) -> None:
+        show = "" if self.show_archive_password_var.get() else "*"
+        self.archive_password_entry.configure(show=show)
+        self.archive_password_confirm_entry.configure(show=show)
+
+    def _toggle_encryption(self) -> None:
+        enabled = self.encrypt_var.get()
+        if enabled:
+            self.encrypt_hint.grid()
+            self.password_box.grid()
+            if FORMAT_LABELS.get(self.format_var.get(), "auto") != "7z":
+                self.format_var.set(FORMAT_LABEL_BY_VALUE["7z"])
+                self._log("加密模式已切换到 7-Zip 原生分卷。", "warn")
+            self.format_combo.configure(state="disabled")
+            self.archive_password_entry.focus_set()
+        else:
+            self.encrypt_hint.grid_remove()
+            self.password_box.grid_remove()
+            self.format_combo.configure(state="readonly")
+            self.archive_password_var.set("")
+            self.archive_password_confirm_var.set("")
+            self.show_archive_password_var.set(False)
+            self._toggle_archive_password_visibility()
+
     # ------------------------------------------------------------------ 选择
 
     def _choose_file(self) -> None:
@@ -1090,6 +1211,24 @@ class App:
                 "或把“压缩方式”改为“ZIP 分卷（兼容模式）”。"
             )
 
+        archive_password = ""
+        if self.encrypt_var.get():
+            archive_password = self.archive_password_var.get()
+            if not archive_password:
+                raise ConfigError("已勾选加密压缩包，请填写压缩密码。")
+            if archive_password != self.archive_password_confirm_var.get():
+                raise ConfigError("两次输入的压缩密码不一致。")
+            validate_archive_password(archive_password)
+            if archive_format == "zip":
+                raise ConfigError(
+                    "加密压缩仅支持“7-Zip 原生分卷”。\n"
+                    "ZIP 的 AES 密码兼容性有限，请改用 7-Zip。"
+                )
+            if not find_7zip():
+                raise ConfigError(
+                    "加密压缩需要 7-Zip。请先安装 7-Zip，或关闭加密。"
+                )
+
         sender = self.sender_var.get().strip()
         recipients: list[str] = []
         raw_recipients = self.to_var.get().strip()
@@ -1113,6 +1252,7 @@ class App:
             display_name=APP_NAME,
             sender=sender,
             recipients=recipients,
+            archive_password=archive_password,
         )
 
     def _build_smtp_config(self, sender: str, recipients: list[str]) -> SmtpConfig:
@@ -1428,10 +1568,16 @@ class App:
                 messagebox.showerror("缺少收件人", str(exc))
                 return
 
+        encryption_note = (
+            "压缩加密：已启用；续传只需发送已生成的分卷，不需要压缩密码。\n"
+            if job.data.get("encrypted")
+            else ""
+        )
         if not messagebox.askyesno(
             "继续发送",
             f"任务：{job.data.get('source_name', '')}\n"
             f"已发送 {len(sent)}/{total} 卷，将继续发送剩余 {total - len(sent)} 卷。\n\n"
+            f"{encryption_note}"
             f"收件人：{', '.join(recipients)}\n\n是否继续？",
         ):
             return

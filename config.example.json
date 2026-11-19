@@ -16,5 +16,6 @@
   "send_interval": 3,
   "max_retries": 3,
   "timeout": 90,
-  "auth_code_env": "QQ_SMTP_AUTH_CODE"
+  "auth_code_env": "QQ_SMTP_AUTH_CODE",
+  "archive_password_env": "QQVOLMAIL_ARCHIVE_PASSWORD"
 }

@@ -162,6 +162,52 @@ class GuiSettingsTests(unittest.TestCase):
         showerror.assert_called_once()
         self.assertIn("测试错误", showerror.call_args[0][1])
 
+    def test_encryption_password_is_not_saved(self) -> None:
+        self.app.encrypt_var.set(True)
+        self.app.archive_password_var.set("S3cret!中文")
+        self.app.archive_password_confirm_var.set("S3cret!中文")
+        self.app._save_settings()
+        text = (self.temp / "settings.json").read_text(encoding="utf-8")
+        data = json.loads(text)
+        self.assertNotIn("S3cret!中文", text)
+        self.assertNotIn("archive_password", data)
+        self.assertNotIn("archive_password_confirm", data)
+
+    def test_encryption_rejects_mismatched_passwords(self) -> None:
+        source = self.temp / "source.bin"
+        source.write_bytes(b"data")
+        self.app.source_var.set(str(source))
+        self.app.encrypt_var.set(True)
+        self.app.archive_password_var.set("abcd")
+        self.app.archive_password_confirm_var.set("abce")
+        with self.assertRaises(gui.ConfigError):
+            self.app._build_prepare_config(False)
+
+    def test_encryption_switches_format_to_7z(self) -> None:
+        self.app.format_var.set(gui.FORMAT_LABEL_BY_VALUE["zip"])
+        self.app.encrypt_var.set(True)
+        self.app._toggle_encryption()
+        self.assertEqual(self.app.format_var.get(), gui.FORMAT_LABEL_BY_VALUE["7z"])
+        self.assertEqual(str(self.app.format_combo.cget("state")), "disabled")
+        self.app.encrypt_var.set(False)
+        self.app._toggle_encryption()
+        self.assertEqual(str(self.app.format_combo.cget("state")), "readonly")
+        self.assertEqual(self.app.archive_password_var.get(), "")
+        self.assertEqual(self.app.archive_password_confirm_var.get(), "")
+
+    @unittest.skipUnless(gui.find_7zip(), "未安装 7-Zip")
+    def test_encryption_password_reaches_prepare_config(self) -> None:
+        source = self.temp / "source.bin"
+        source.write_bytes(b"data")
+        self.app.source_var.set(str(source))
+        self.app.format_var.set(gui.FORMAT_LABEL_BY_VALUE["7z"])
+        self.app.encrypt_var.set(True)
+        self.app.archive_password_var.set("S3cret!中文")
+        self.app.archive_password_confirm_var.set("S3cret!中文")
+        config = self.app._build_prepare_config(False)
+        self.assertEqual(config.archive_password, "S3cret!中文")
+        self.assertEqual(config.archive_format, "auto")
+
     def test_unchecking_remember_removes_auth_code(self) -> None:
         self.app.remember_auth_var.set(True)
         self.app._auth_consent = True

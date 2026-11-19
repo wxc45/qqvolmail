@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """QQ 分卷邮递。
 
@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 APP_NAME = "QQ 分卷邮递"
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.3.0"
 SCHEMA_VERSION = 1
 
 DEFAULT_VOLUME_MB = 20
@@ -53,6 +53,9 @@ QQ_SMTP_HOST = "smtp.qq.com"
 QQ_SMTP_SSL_PORT = 465
 QQ_SMTP_STARTTLS_PORT = 587
 DEFAULT_AUTH_ENV = "QQ_SMTP_AUTH_CODE"
+DEFAULT_ARCHIVE_PASSWORD_ENV = "QQVOLMAIL_ARCHIVE_PASSWORD"
+MIN_ARCHIVE_PASSWORD_LEN = 4
+MAX_ARCHIVE_PASSWORD_LEN = 128
 
 EMAIL_RE = re.compile(
     r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+"
@@ -132,6 +135,8 @@ class PrepareConfig:
     display_name: str = APP_NAME
     sender: str = ""
     recipients: list[str] = field(default_factory=list)
+    # 只用于本次压缩，绝不写入 manifest、日志或邮件正文。
+    archive_password: str = field(default="", repr=False)
 
 
 @dataclass
@@ -224,6 +229,22 @@ def validate_single_email(raw: str, label: str) -> str:
     if "\r" in address or "\n" in address or not EMAIL_RE.match(address):
         raise ConfigError(f"{label}格式不正确：{address or '（空）'}")
     return address
+
+
+def validate_archive_password(password: str) -> str:
+    """校验可选的压缩包密码；空字符串表示不加密。"""
+    value = password or ""
+    if not value:
+        return ""
+    if len(value) < MIN_ARCHIVE_PASSWORD_LEN:
+        raise ConfigError(f"压缩密码至少需要 {MIN_ARCHIVE_PASSWORD_LEN} 位。")
+    if len(value) > MAX_ARCHIVE_PASSWORD_LEN:
+        raise ConfigError(f"压缩密码不能超过 {MAX_ARCHIVE_PASSWORD_LEN} 位。")
+    if not value.strip():
+        raise ConfigError("压缩密码不能全部是空格。")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ConfigError("压缩密码不能包含换行或其他控制字符。")
+    return value
 
 
 def is_relative_to(path: Path, parent: Path) -> bool:
@@ -397,47 +418,33 @@ def _create_job_dir(output_root: Path, source: Path) -> Path:
     raise ConfigError("无法创建任务目录，请检查输出目录权限。")
 
 
-def _run_7z(
+def _run_7zip_command(
     sevenzip: str,
-    source: Path,
-    archive_path: Path,
-    volume_bytes: int,
-    level: int,
+    args: list[str],
+    cwd: Path,
     job_dir: Path,
     reporter: Reporter,
     cancel: threading.Event | None,
+    started_text: str,
 ) -> None:
+    """运行 7-Zip，带取消与心跳；密码只存在于进程参数中，不写日志。"""
     log_path = job_dir / "7z.log"
-    args = [
-        sevenzip,
-        "a",
-        "-t7z",
-        f"-mx={level}",
-        f"-v{volume_bytes}b",
-        "-y",
-        "-sccUTF-8",
-        "-bsp1",
-        str(archive_path),
-        f".\\{source.name}",
-    ]
     creationflags = 0
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-    reporter.progress("compress", 0, 0, "正在使用 7-Zip 压缩并分卷...")
-    reporter.log("正在使用 7-Zip 压缩并分卷（大文件可能需要较长时间）...")
     started_at = time.monotonic()
     last_heartbeat = started_at
     try:
         with open(log_path, "w", encoding="utf-8", errors="replace") as log_handle:
             process = subprocess.Popen(
                 args,
-                cwd=str(source.parent),
+                cwd=str(cwd),
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 creationflags=creationflags,
             )
-            reporter.log("7-Zip 已启动，正在压缩并写入分卷...")
+            reporter.log(started_text)
             while True:
                 try:
                     return_code = process.wait(timeout=0.2)
@@ -471,6 +478,46 @@ def _run_7z(
         except OSError:
             pass
         raise ArchiveError(f"7-Zip 压缩失败（退出码 {return_code}）。\n{detail}")
+
+
+def _run_7z(
+    sevenzip: str,
+    source: Path,
+    archive_path: Path,
+    volume_bytes: int,
+    level: int,
+    job_dir: Path,
+    reporter: Reporter,
+    cancel: threading.Event | None,
+    password: str = "",
+) -> None:
+    args = [
+        sevenzip,
+        "a",
+        "-t7z",
+        f"-mx={level}",
+        f"-v{volume_bytes}b",
+        "-y",
+        "-sccUTF-8",
+        "-bsp1",
+    ]
+    if password:
+        args.append(f"-p{password}")
+        args.append("-mhe=on")
+    args.extend([str(archive_path), f".\\{source.name}"])
+
+    reporter.progress("compress", 0, 0, "正在使用 7-Zip 压缩并分卷...")
+    mode = "加密压缩" if password else "压缩"
+    reporter.log(f"正在使用 7-Zip {mode}并分卷（大文件可能需要较长时间）...")
+    _run_7zip_command(
+        sevenzip,
+        args,
+        source.parent,
+        job_dir,
+        reporter,
+        cancel,
+        "7-Zip 已启动，正在压缩并写入分卷...",
+    )
 
 
 def _collect_7z_parts(archive_path: Path) -> tuple[list[Path], list[str]]:
@@ -619,6 +666,7 @@ def _write_readme(job_dir: Path, manifest: dict) -> None:
         "",
         f"原始内容：{manifest['source_name']}",
         f"压缩格式：{manifest['archive_format']}",
+        "压缩加密：" + ("已启用（AES-256）" if manifest.get("encrypted") else "未启用"),
         f"分卷数量：{total}",
         f"分卷大小：{format_bytes(manifest['volume_size_bytes'])}",
         f"任务目录：{job_dir}",
@@ -643,6 +691,7 @@ def _write_readme(job_dir: Path, manifest: dict) -> None:
             "1. 请将全部分卷放在同一个文件夹内，不要重命名。",
             "2. 下载后建议核对每个分卷的 SHA-256。",
             "3. 如果缺少任意一卷，压缩包将无法完整解压。",
+            "4. 压缩密码不会写入本文件、任务清单或邮件；请通过其他渠道向发件人获取。",
             "",
         ]
     )
@@ -671,6 +720,7 @@ def _validate_prepare(config: PrepareConfig) -> tuple[Path, Path, int, str]:
         raise ConfigError("压缩级别必须在 0~9 之间。")
     if config.archive_format not in {"auto", "7z", "zip"}:
         raise ConfigError("压缩方式必须是 auto、7z 或 zip。")
+    validate_archive_password(config.archive_password)
     return source, output_root, int(config.volume_size_mb) * 1024 * 1024, config.archive_format
 
 
@@ -692,10 +742,23 @@ def create_job(
             "没有找到 7-Zip。请先安装 7-Zip（https://www.7-zip.org/），"
             "或把压缩方式改为 ZIP。"
         )
+    password = validate_archive_password(config.archive_password)
+    if password and not sevenzip:
+        raise ConfigError(
+            "创建加密压缩包需要 7-Zip。\n"
+            "请先安装 7-Zip（https://www.7-zip.org/），或关闭“加密压缩包”。"
+        )
+    if password and archive_format != "7z":
+        raise ConfigError(
+            "加密压缩目前仅支持“7-Zip 原生分卷”。\n"
+            "ZIP 的 AES 密码兼容性有限，且 Windows 资源管理器无法直接打开。\n"
+            "请把压缩方式改为 7-Zip，或关闭“加密压缩包”。"
+        )
 
     reporter.log(f"源路径：{source}")
     reporter.log(f"压缩方式：{'7-Zip 原生分卷' if archive_format == '7z' else 'ZIP + 二进制分卷'}")
     reporter.log(f"分卷大小：{format_bytes(volume_bytes)}")
+    reporter.log("压缩加密：已启用（AES-256）" if password else "压缩加密：未启用")
 
     file_count, source_size = _scan_source(source, reporter, cancel)
     _check_cancel(cancel)
@@ -717,7 +780,7 @@ def create_job(
             assert sevenzip is not None
             _run_7z(
                 sevenzip, source, archive_path, volume_bytes, int(config.compression_level),
-                job_dir, reporter, cancel,
+                job_dir, reporter, cancel, password,
             )
             parts, log_lines = _collect_7z_parts(archive_path)
             for line in log_lines:
@@ -758,7 +821,9 @@ def create_job(
             )
 
         total_bytes = sum(item["size"] for item in part_records)
-        instructions = _build_instructions(archive_format, len(part_records), part_records)
+        instructions = _build_instructions(
+            archive_format, len(part_records), part_records, encrypted=bool(password)
+        )
         manifest = {
             "schema_version": SCHEMA_VERSION,
             "app_version": APP_VERSION,
@@ -772,6 +837,9 @@ def create_job(
             "file_count": file_count,
             "archive_format": archive_format,
             "archive_name": parts[0].name if len(parts) == 1 else f"{archive_base}.{archive_format}",
+            "encrypted": bool(password),
+            "encryption": "AES-256" if password else "",
+            "header_encryption": bool(password and archive_format == "7z"),
             "volume_size_bytes": volume_bytes,
             "compression_level": int(config.compression_level),
             "total_parts": len(part_records),
@@ -803,36 +871,56 @@ def create_job(
         raise
 
 
-def _build_instructions(archive_format: str, total: int, parts: list[dict]) -> str:
+def _build_instructions(
+    archive_format: str, total: int, parts: list[dict], encrypted: bool = False
+) -> str:
     if total == 1:
-        return "附件就是完整的压缩包，下载后直接解压即可。"
-    first = parts[0]["name"]
-    if archive_format == "7z":
-        return (
+        base = "附件就是完整的压缩包，下载后直接解压即可。"
+    elif archive_format == "7z":
+        first = parts[0]["name"]
+        base = (
             f"请把全部 {total} 个分卷下载到同一个文件夹，安装 7-Zip 后，"
             f"右键点击第 1 个分卷（{first}）→“7-Zip”→“提取到当前文件夹”。"
             "请勿重命名或缺少任何分卷。"
         )
-    names = [item["name"] for item in parts]
-    zip_name = names[0][:-4] if names[0].endswith(".001") else "merged.zip"
-    if total <= 20:
-        command = f'copy /b "{names[0]}"' + "".join(f' + "{name}"' for name in names[1:])
-        command += f' "{zip_name}"'
-        return (
-            f"这是 ZIP 分卷，请把全部 {total} 个分卷下载到同一个文件夹，"
-            "然后在命令提示符中执行：\n\n"
-            f"{command}\n\n"
-            "合并完成后解压生成的 ZIP 文件。请勿重命名分卷。"
-        )
-    return (
-        f"这是 ZIP 分卷。请把全部 {total} 个分卷下载到同一个文件夹，"
-        "然后在 PowerShell 中执行以下命令合并：\n\n"
-        f'$out=[IO.File]::Create("merged.zip"); '
-        f'Get-ChildItem "{zip_name}.*" | Sort-Object Name | '
-        'ForEach-Object { $in=[IO.File]::OpenRead($_.FullName); $in.CopyTo($out); $in.Close() }; '
-        '$out.Close()\n\n'
-        "合并完成后解压 merged.zip。请勿重命名分卷。"
-    )
+    else:
+        names = [item["name"] for item in parts]
+        zip_name = names[0][:-4] if names[0].endswith(".001") else "merged.zip"
+        if total <= 20:
+            command = f'copy /b "{names[0]}"' + "".join(
+                f' + "{name}"' for name in names[1:]
+            )
+            command += f' "{zip_name}"'
+            base = (
+                f"这是 ZIP 分卷，请把全部 {total} 个分卷下载到同一个文件夹，"
+                "然后在命令提示符中执行：\n\n"
+                f"{command}\n\n"
+                "合并完成后解压生成的 ZIP 文件。请勿重命名分卷。"
+            )
+        else:
+            base = (
+                f"这是 ZIP 分卷。请把全部 {total} 个分卷下载到同一个文件夹，"
+                "然后在 PowerShell 中执行以下命令合并：\n\n"
+                f'$out=[IO.File]::Create("merged.zip"); '
+                f'Get-ChildItem "{zip_name}.*" | Sort-Object Name | '
+                "ForEach-Object { $in=[IO.File]::OpenRead($_.FullName); $in.CopyTo($out); $in.Close() }; "
+                '$out.Close()\n\n'
+                "合并完成后解压 merged.zip。请勿重命名分卷。"
+            )
+
+    if encrypted:
+        if archive_format == "zip":
+            base += (
+                "\n\n加密提示：压缩包已使用 AES-256 加密。"
+                "Windows 资源管理器通常无法打开 AES 加密 ZIP，请使用 7-Zip 或 WinRAR 解压并输入密码。"
+                "密码由发件人通过其他渠道提供，本邮件不会包含密码。"
+            )
+        else:
+            base += (
+                "\n\n加密提示：压缩包已使用 AES-256 加密，文件名也已隐藏。"
+                "解压时需要输入密码；密码由发件人通过其他渠道提供，本邮件不会包含密码。"
+            )
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -877,7 +965,10 @@ def _save_job(job: Job) -> None:
 def _email_body(job: Job, part: dict, index: int, total: int) -> str:
     data = job.data
     instructions = data.get("instructions") or _build_instructions(
-        data.get("archive_format", "7z"), total, data["parts"]
+        data.get("archive_format", "7z"),
+        total,
+        data["parts"],
+        encrypted=bool(data.get("encrypted")),
     )
     header = (
         f"您好：\n\n"
@@ -1288,6 +1379,11 @@ def _resolve_prepare(args: argparse.Namespace, config: dict) -> PrepareConfig:
     else:
         recipients_raw = _config_value(config, "recipients", [])
     recipients = parse_email_list(recipients_raw) if recipients_raw else []
+    password_env = (
+        getattr(args, "password_env", None)
+        or _config_value(config, "archive_password_env", DEFAULT_ARCHIVE_PASSWORD_ENV)
+    )
+    archive_password = os.environ.get(str(password_env), "") if password_env else ""
     return PrepareConfig(
         source=Path(source_raw),
         output_root=Path(output_raw),
@@ -1298,6 +1394,7 @@ def _resolve_prepare(args: argparse.Namespace, config: dict) -> PrepareConfig:
         display_name=str(display_name),
         sender=str(sender).strip(),
         recipients=recipients,
+        archive_password=archive_password,
     )
 
 
@@ -1369,6 +1466,10 @@ def _add_prepare_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--display-name", help="发件人显示名称")
     parser.add_argument("--sender", help="发件 QQ 邮箱")
     parser.add_argument("--to", action="append", help="收件邮箱，可重复或逗号分隔")
+    parser.add_argument(
+        "--password-env",
+        help=f"保存压缩密码的环境变量名（默认 {DEFAULT_ARCHIVE_PASSWORD_ENV}；不推荐把密码写在命令行）",
+    )
 
 
 def _add_smtp_options(parser: argparse.ArgumentParser) -> None:

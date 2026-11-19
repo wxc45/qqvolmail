@@ -8,6 +8,7 @@ import hashlib
 import os
 import shutil
 import smtplib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -136,6 +137,105 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(job.parts[0]["name"].endswith(".7z"))
         self.assertFalse(job.parts[0]["name"].endswith(".001"))
         self.assertTrue((job.job_dir / job.parts[0]["name"]).is_file())
+
+    def test_validate_archive_password(self) -> None:
+        self.assertEqual(core.validate_archive_password(""), "")
+        self.assertEqual(core.validate_archive_password("S3cret!中文"), "S3cret!中文")
+        for bad in ("abc", "    ", "line\nbreak", "a" * 129):
+            with self.assertRaises(core.ConfigError):
+                core.validate_archive_password(bad)
+
+    @unittest.skipUnless(core.find_7zip(), "未安装 7-Zip")
+    def test_encrypted_7z_volumes_and_extract(self) -> None:
+        password = "S3cret!中文"
+        source = self.make_file(2 * 1024 * 1024 + 12345, "秘密资料.bin")
+        config = core.PrepareConfig(
+            source=source,
+            output_root=self.temp / "out_enc",
+            volume_size_mb=1,
+            archive_format="7z",
+            compression_level=1,
+            archive_password=password,
+        )
+        job = core.create_job(config, core.Reporter())
+        self.assertTrue(job.data["encrypted"])
+        self.assertEqual(job.data["encryption"], "AES-256")
+        self.assertTrue(job.data["header_encryption"])
+        self.assertGreater(len(job.parts), 1)
+        self.assertIn("密码", job.data["instructions"])
+
+        for text_path in (
+            job.manifest_path,
+            job.job_dir / "7z.log",
+            job.job_dir / "解压说明.txt",
+        ):
+            self.assertNotIn(password, text_path.read_text(encoding="utf-8", errors="replace"))
+
+        seven = core.find_7zip()
+        assert seven
+        part = job.job_dir / job.parts[0]["name"]
+        target = self.temp / "extracted"
+        result = subprocess.run(
+            [seven, "x", str(part), f"-p{password}", f"-o{target}", "-y"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout[-1000:])
+        self.assertEqual((target / "秘密资料.bin").read_bytes(), source.read_bytes())
+
+        bad_target = self.temp / "bad_extract"
+        bad = subprocess.run(
+            [seven, "x", str(part), "-pwrong-password", f"-o{bad_target}", "-y"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self.assertNotEqual(bad.returncode, 0)
+
+        smtp = core.SmtpConfig(
+            sender="sender@qq.com",
+            recipients=["to@example.com"],
+            auth_code="auth-code",
+            send_interval=0,
+            max_retries=0,
+        )
+        sender, recipients, display_name, prefix = core._merge_send_metadata(job, smtp)
+        message = core.build_message(
+            job, job.parts[0], 1, len(job.parts),
+            sender, recipients, display_name, prefix,
+        )
+        body = message.get_body(preferencelist=("plain",)).get_content()
+        self.assertNotIn(password, body)
+
+    @unittest.skipUnless(core.find_7zip(), "未安装 7-Zip")
+    def test_encrypted_zip_rejected(self) -> None:
+        source = self.make_file(1000, "payload.bin")
+        config = core.PrepareConfig(
+            source=source,
+            output_root=self.temp / "out_zip_enc",
+            volume_size_mb=1,
+            archive_format="zip",
+            archive_password="secret123",
+        )
+        with self.assertRaises(core.ConfigError):
+            core.create_job(config, core.Reporter())
+
+    @unittest.skipUnless(core.find_7zip(), "未安装 7-Zip")
+    def test_encrypted_requires_7zip(self) -> None:
+        source = self.make_file(1000, "payload.bin")
+        config = core.PrepareConfig(
+            source=source,
+            output_root=self.temp / "out_no_7z",
+            volume_size_mb=1,
+            archive_format="7z",
+            archive_password="secret123",
+        )
+        with mock.patch.object(core, "find_7zip", return_value=None):
+            with self.assertRaises(core.ConfigError):
+                core.create_job(config, core.Reporter())
 
     def test_directory_archive_keeps_folder(self) -> None:
         source = self.temp / "资料夹"

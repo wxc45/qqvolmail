@@ -12,13 +12,14 @@
 ## 下载
 
 - [最新 Releases](https://github.com/wxc45/qqvolmail/releases/latest)：Windows 单文件版与便携版。
-- [QQVolMail_v1.2.4_win64.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.2.4/QQVolMail_v1.2.4_win64.zip)：单文件启动器。
-- [QQVolMail_v1.2.4_win64_portable.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.2.4/QQVolMail_v1.2.4_win64_portable.zip)：便携文件夹版。
+- [QQVolMail_v1.3.0_win64.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.3.0/QQVolMail_v1.3.0_win64.zip)：单文件启动器。
+- [QQVolMail_v1.3.0_win64_portable.zip](https://github.com/wxc45/qqvolmail/releases/download/v1.3.0/QQVolMail_v1.3.0_win64_portable.zip)：便携文件夹版。
 - 也可以从源码运行，见下方“快速开始”。
 
 ## 功能
 
 - **原生 7-Zip 分卷**：生成 `.7z.001`、`.7z.002`……收件人装好 7-Zip 后右键第 1 卷即可解压。
+- **压缩包加密（v1.3.0）**：可选 AES-256 加密，并隐藏压缩包内文件名；密码只用于本次任务，不写入设置、任务清单、日志或邮件。
 - **ZIP 兼容模式**：选择该模式时生成 `.zip.001` 等分卷，并在邮件里给出合并命令。
 - **逐卷发送**：每封邮件只带一个分卷，默认 20 MB，避免超过 QQ 邮箱普通附件上限。
 - **断点续传**：每个任务生成 `manifest.json`，记录已发送分卷；网络中断后只补发剩余分卷。
@@ -41,6 +42,31 @@
   如果系统已禁用 UAC，该清单会被忽略，因此“复制到普通目录”仍是必须步骤。
 - 如果 UAC 选择“否”，程序不会启动，这是预期行为；不会出现“界面打开但无法创建任何文件”的半失败状态。
 - 仍保留批处理启动方式，作为不能/不想使用单文件启动器时的备用方案。
+
+## v1.3.0 新增：压缩包加密
+
+![加密设置](screenshots/encrypt.png)
+
+勾选界面中的「加密压缩包（AES-256，仅 7-Zip）」后填写并确认密码，即可生成加密分卷：
+
+- 使用 7-Zip 的 **AES-256** 加密，并开启 **头部加密**（`-mhe=on`），隐藏压缩包内的文件名。
+- 加密模式固定使用「7-Zip 原生分卷」；ZIP 兼容模式不支持加密。
+- 密码只用于本次压缩任务，**不会写入** `settings.json`、`manifest.json`、`7z.log`、`解压说明.txt` 或邮件正文。
+- 密码不会随任务保存，也不会随邮件发送；请通过其他安全渠道（电话、另一封邮件、即时消息）单独告知收件人。
+- 密码长度 4–128 位；忘记密码后无法恢复。
+- 收件人仍需安装 7-Zip，右键第 1 卷 →「7-Zip」→「提取到当前文件夹」，解压时输入密码。
+- 勾选加密后，「压缩方式」会自动切换为 7-Zip 并锁定；关闭加密后恢复可选。
+
+命令行不提供明文密码参数，只从环境变量读取：
+
+```bat
+set QQVOLMAIL_ARCHIVE_PASSWORD=你的压缩密码
+python qqvolmail.py prepare --source "D:\资料\产品资料" --output "D:\QQVolMail" --format 7z --password-env QQVOLMAIL_ARCHIVE_PASSWORD
+```
+
+也可以把环境变量名写入 `config.json` 的 `archive_password_env`；不要把密码本身写进配置文件。
+
+> ZIP AES 在 7-Zip 下对中文密码存在编码限制，且 Windows 资源管理器不能直接打开 AES ZIP，因此本工具不提供 ZIP 加密，避免出现“能压缩但收件人打不开”的情况。
 
 ## v1.2.3 修复
 
@@ -69,16 +95,16 @@
 
 **方式一：使用 exe（推荐给普通用户）**
 
-1. 把 `QQVolMail_v1.2.4_win64.zip` 解压到**桌面或下载目录**（不要解压到带 Low 完整性标签的受限目录），
+1. 把 `QQVolMail_v1.3.0_win64.zip` 解压到**桌面或下载目录**（不要解压到带 Low 完整性标签的受限目录），
    双击其中的 **`QQ分卷邮递.exe`**。
 2. 第一次启动会在 exe 旁边创建 `QQVolMail_runtime` 文件夹，把内置程序解压进去，
    然后启动主界面；之后启动会直接复用，不再重复解压。
 3. 启动时会依次出现 SmartScreen 和 UAC：SmartScreen 点“更多信息”→“仍要运行”，
    UAC 点“是”。程序需要管理员权限才能在任意输出目录创建分卷。
 4. 如果 exe 所在文件夹没有写入权限（例如放在 `Program Files`），
-   改用 `QQVolMail_v1.2.4_win64_portable.zip`，解压到可写目录后运行。
+   改用 `QQVolMail_v1.3.0_win64_portable.zip`，解压到可写目录后运行。
 5. 点击「选择文件」或「选择文件夹」，再选择输出目录。
-6. 设置每卷大小（建议 20 MB）和压缩方式。
+6. 设置每卷大小（建议 20 MB）和压缩方式；如需加密，勾选「加密压缩包」，填写并确认密码。
 7. 填写发件 QQ 邮箱、SMTP 授权码、收件邮箱。
 8. 建议先点「测试邮箱连接」，确认授权码正确。
 9. 点「仅压缩分卷」可先检查分卷结果；点「压缩并发送」开始正式发送。
@@ -224,6 +250,7 @@ python qqvolmail.py send --config config.json
 | `send_interval` | 每封邮件间隔秒数，默认 3 |
 | `max_retries` | 网络失败重试次数 |
 | `auth_code_env` | 保存授权码的环境变量名 |
+| `archive_password_env` | 压缩密码的环境变量名，默认 `QQVOLMAIL_ARCHIVE_PASSWORD`；仅加密时读取 |
 
 ## 收件人如何解压
 
@@ -363,6 +390,7 @@ python -m unittest discover -s tests -v
 - 邮件 MIME、附件名、正文
 - 发送成功、断点续传、认证失败、元数据不一致
 - 设置持久化、源文件不落盘、窗口位置恢复、授权码 DPAPI 加解密
+- 压缩密码校验、加密 7-Zip 分卷生成/解压、错误密码、密码不落盘、ZIP 加密拒绝
 
 ## 目录结构
 
@@ -389,7 +417,7 @@ qqvolmail/
   不依赖 `%TEMP%`，也不会再出现 “Could not create temporary directory”。
   v1.2.4 起启动器与主程序均请求管理员权限（UAC），以避免 SmartScreen
   以普通权限启动后无法创建任务文件。
-- `QQ分卷邮递_v1.2.4_win64_portable.zip`：文件夹版。适合 exe 所在目录不可写，
+- `QQ分卷邮递_v1.3.0_win64_portable.zip`：文件夹版。适合 exe 所在目录不可写，
   或希望完全手动管理程序文件的情况。
 - 7-Zip 仍建议单独安装；不安装时可在界面选择 ZIP 兼容模式。
 

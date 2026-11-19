@@ -1,7 +1,7 @@
-VSVersionInfo(
+﻿VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 2, 4, 0),
-    prodvers=(1, 2, 4, 0),
+    filevers=(1, 3, 0, 0),
+    prodvers=(1, 3, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -15,11 +15,11 @@ VSVersionInfo(
         u'080404B0',
         [StringStruct(u'CompanyName', u'QQ 分卷邮递'),
          StringStruct(u'FileDescription', u'QQ 分卷邮递 - 压缩分卷并通过 QQ 邮箱发送'),
-         StringStruct(u'FileVersion', u'1.2.4'),
+         StringStruct(u'FileVersion', u'1.3.0'),
          StringStruct(u'InternalName', u'QQVolMail'),
          StringStruct(u'OriginalFilename', u'QQ分卷邮递.exe'),
          StringStruct(u'ProductName', u'QQ 分卷邮递'),
-         StringStruct(u'ProductVersion', u'1.2.4')])
+         StringStruct(u'ProductVersion', u'1.3.0')])
     ]),
     VarFileInfo([VarStruct(u'Translation', [2052, 1200])])
   ]

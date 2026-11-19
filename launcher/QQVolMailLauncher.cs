@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -10,14 +10,14 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("QQ 分卷邮递单文件启动器")]
 [assembly: AssemblyProduct("QQ 分卷邮递")]
 [assembly: AssemblyCompany("QQ 分卷邮递")]
-[assembly: AssemblyVersion("1.2.4.0")]
-[assembly: AssemblyFileVersion("1.2.4.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 namespace QQVolMail
 {
     internal static class Program
     {
-        private const string AppVersion = "1.2.4";
+        private const string AppVersion = "1.3.0";
         private const string ResourceName = "QQVolMail.App.zip";
         private const string AppFolderName = "QQ分卷邮递";
         private const string AppExeName = "QQ分卷邮递.exe";
